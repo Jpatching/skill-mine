@@ -1,0 +1,18 @@
+# Build artifacts
+/target/
+*.so
+
+# Solana test ledger
+test-ledger/
+
+# Environment
+.env
+.env.local
+
+# OS
+.DS_Store
+
+# IDE
+.idea/
+.vscode/
+*.swp
