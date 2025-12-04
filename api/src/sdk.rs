@@ -591,3 +591,19 @@ pub fn initialize(
         .to_bytes(),
     }
 }
+
+/// v0.2: Build a SubmitPrediction instruction.
+/// Allows a miner to predict which square will win the current round.
+pub fn submit_prediction(signer: Pubkey, square: u8) -> Instruction {
+    let board_address = board_pda().0;
+    let miner_address = miner_pda(signer).0;
+    Instruction {
+        program_id: crate::ID,
+        accounts: vec![
+            AccountMeta::new(signer, true),
+            AccountMeta::new(miner_address, false),
+            AccountMeta::new_readonly(board_address, false),
+        ],
+        data: SubmitPrediction { square }.to_bytes(),
+    }
+}

@@ -20,6 +20,7 @@ mod set_admin_fee;
 mod set_fee_collector;
 mod set_swap_program;
 mod set_var_address;
+mod submit_prediction;
 mod withdraw;
 mod wrap;
 
@@ -45,6 +46,7 @@ use set_admin_fee::*;
 use set_fee_collector::*;
 use set_swap_program::*;
 use set_var_address::*;
+use submit_prediction::*;
 use withdraw::*;
 use wrap::*;
 
@@ -88,6 +90,9 @@ pub fn process_instruction(
         OreInstruction::MigrateAutomation => process_migrate_automation(accounts, data)?,
         OreInstruction::Liq => process_liq(accounts, data)?,
         OreInstruction::Initialize => process_initialize(accounts, data)?,
+
+        // Skill System (v0.2)
+        OreInstruction::SubmitPrediction => process_submit_prediction(accounts, data)?,
     }
 
     Ok(())

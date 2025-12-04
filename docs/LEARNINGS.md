@@ -32,6 +32,7 @@ Per-miner per-square tracking enables deterministic winner selection:
 - Provides account parsing macros and instruction routing
 - Uses discriminator-based account identification
 - Simplifies PDA derivation and validation
+- `instruction!` macro auto-generates deserialization code
 
 ### BPF Build Requirements
 - Use `cargo test-sbf` for full program tests
@@ -42,18 +43,44 @@ Per-miner per-square tracking enables deterministic winner selection:
 - Use `sol_log` for on-chain debugging
 - PDAs derived with consistent seeds across state modules
 - Instruction data parsed via `steel::parse_instruction`
+- Account size validated with `8 + std::mem::size_of::<T>()`
+
+### Account Sizing
+Current Miner account: 536 bytes (+ 8 byte discriminator = 544 total)
+- Adding skill fields increases by ~44 bytes
+- Must update size checks when extending accounts
+- Rent costs scale linearly with account size
+
+## v0.1 Implementation Learnings
+
+### Initialize Instruction Pattern
+```rust
+// PDA creation with CPI signing
+invoke_signed(
+    &system_instruction::create_account(...),
+    &[accounts...],
+    &[&[SEED, &[bump]]],  // Signer seeds
+)?;
+```
+
+### Key Insights from v0.1
+1. **PDA-derived mint** - SKILL mint is a PDA, not external address
+2. **Treasury as mint authority** - Enables controlled token minting
+3. **Flexible entropy source** - var_address stored in Config, not hardcoded
+4. **CLI env var pattern** - `COMMAND=init ADMIN=<pubkey>` pattern works well
 
 ## Security Considerations
 
 ### Challenge System Design
 - Predictions must be submitted BEFORE round ends
-- Verify `last_challenge_round < current_round` to prevent retroactive predictions
+- Verify `last_prediction_round < current_round` to prevent retroactive predictions
 - On-chain timestamp verification via `Clock` sysvar
 
 ### Multiplier Caps
 - Unbounded skill multipliers could be exploited
-- Consider logarithmic scaling: `1.0 + log(skill_score) / DIVISOR`
-- Or hard caps: `min(skill_multiplier, MAX_MULTIPLIER)`
+- Chosen formula: `base + log(score) * 5 + streak * 2`, capped at 150 (1.5x)
+- Logarithmic scaling prevents runaway multipliers
+- Streak capped at 10 for max +20% bonus
 
 ### Sybil Resistance
 - Single account could be gamed with multiple wallets
@@ -85,3 +112,35 @@ Per-miner per-square tracking enables deterministic winner selection:
 - Battle-tested smart contract code
 - Community familiarity with mechanics
 - Reduces audit scope to skill additions only
+
+## v0.2 Skill System Design
+
+### Miner State Extensions
+```rust
+pub skill_score: u64,           // Cumulative points (never decreases)
+pub prediction: u8,             // Current guess (0-24, 255=none)
+pub streak: u16,                // Consecutive correct predictions
+pub last_prediction_round: u64, // Anti-replay protection
+pub challenge_count: u64,       // Total prediction attempts
+pub challenge_wins: u64,        // Total correct predictions
+```
+
+### Checkpoint Integration
+Skill multiplier applied after base reward calculation:
+```rust
+// After calculating base rewards_ore
+let multiplier = miner.calculate_skill_multiplier();
+let boosted = (rewards_ore * multiplier / 100).min(MAX_REWARD);
+miner.rewards_ore = boosted;
+```
+
+### SubmitPrediction Flow
+1. User calls SubmitPrediction with square (0-24)
+2. Instruction validates:
+   - Round is active (not ended)
+   - User hasn't predicted this round yet
+3. Stores prediction in miner.prediction
+4. Updates last_prediction_round
+5. At checkpoint:
+   - Compare prediction to winning_square
+   - Update skill_score, streak, challenge_count, challenge_wins

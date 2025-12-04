@@ -61,11 +61,13 @@ pub fn process_checkpoint(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
     // Calculate miner rewards.
     let mut rewards_sol = 0;
     let mut rewards_ore = 0;
+    let mut winning_square_for_skill: Option<u8> = None;
 
     // Get the RNG.
     if let Some(r) = round.rng() {
         // Get the winning square.
         let winning_square = round.winning_square(r) as usize;
+        winning_square_for_skill = Some(winning_square as u8);
 
         // If the miner deployed to the winning square, calculate rewards.
         if miner.deployed[winning_square] > 0 {
@@ -146,6 +148,21 @@ pub fn process_checkpoint(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
 
     // Checkpoint rewards.
     miner.update_rewards(treasury);
+
+    // v0.2: Evaluate skill prediction and apply multiplier
+    if let Some(winning_square) = winning_square_for_skill {
+        let skill_multiplier = miner.evaluate_prediction(winning_square, round.id);
+        if skill_multiplier > 100 && rewards_ore > 0 {
+            let boosted_ore = (rewards_ore as u128 * skill_multiplier as u128 / 100) as u64;
+            let bonus = boosted_ore - rewards_ore;
+            sol_log(&format!(
+                "Skill bonus: {}x multiplier, +{} ORE",
+                skill_multiplier as f64 / 100.0,
+                amount_to_ui_amount(bonus, TOKEN_DECIMALS)
+            ).as_str());
+            rewards_ore = boosted_ore;
+        }
+    }
 
     // Checkpoint miner.
     miner.checkpoint_id = round.id;

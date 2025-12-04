@@ -49,6 +49,32 @@ pub struct Miner {
 
     /// The total amount of ORE this miner has mined across all blocks.
     pub lifetime_rewards_ore: u64,
+
+    // ============ v0.2 Skill System Fields ============
+
+    /// Cumulative skill points earned from correct predictions (never decreases).
+    pub skill_score: u64,
+
+    /// Current round prediction: 0-24 for square, 255 for no prediction.
+    pub prediction: u8,
+
+    /// Padding for alignment after u8.
+    pub _padding1: [u8; 1],
+
+    /// Consecutive correct predictions (resets on wrong prediction).
+    pub streak: u16,
+
+    /// Padding for alignment.
+    pub _padding2: [u8; 4],
+
+    /// The round ID when the last prediction was made (anti-replay).
+    pub last_prediction_round: u64,
+
+    /// Total number of prediction attempts.
+    pub challenge_count: u64,
+
+    /// Total number of correct predictions.
+    pub challenge_wins: u64,
 }
 
 impl Miner {
@@ -100,6 +126,77 @@ impl Miner {
 
         // Update this miner account's last seen rewards factor.
         self.rewards_factor = treasury.miner_rewards_factor;
+    }
+
+    // ============ v0.2 Skill System Methods ============
+
+    /// No prediction constant (255 means no prediction made).
+    pub const NO_PREDICTION: u8 = 255;
+
+    /// Maximum skill multiplier (150 = 1.50x).
+    pub const MAX_SKILL_MULTIPLIER: u64 = 150;
+
+    /// Points awarded per correct prediction.
+    pub const POINTS_PER_WIN: u64 = 100;
+
+    /// Calculate skill multiplier as percentage (100 = 1.0x, 150 = 1.5x).
+    /// Formula: base(100) + log10(score)*5 + streak*2, capped at 150.
+    pub fn calculate_skill_multiplier(&self) -> u64 {
+        let base = 100u64;
+
+        // Score bonus: +5% per order of magnitude of skill_score
+        let score_bonus = if self.skill_score > 0 {
+            // Integer approximation of log10
+            let log_approx = (64 - self.skill_score.leading_zeros()) as u64 * 3 / 10;
+            log_approx.saturating_mul(5)
+        } else {
+            0
+        };
+
+        // Streak bonus: +2% per consecutive win, max 10 streaks = +20%
+        let streak_bonus = (self.streak as u64).min(10).saturating_mul(2);
+
+        // Total multiplier, capped at MAX_SKILL_MULTIPLIER
+        (base + score_bonus + streak_bonus).min(Self::MAX_SKILL_MULTIPLIER)
+    }
+
+    /// Check if miner has made a prediction for a given round.
+    pub fn has_prediction_for_round(&self, round_id: u64) -> bool {
+        self.last_prediction_round == round_id && self.prediction != Self::NO_PREDICTION
+    }
+
+    /// Record a prediction for the current round.
+    pub fn submit_prediction(&mut self, square: u8, round_id: u64) {
+        self.prediction = square;
+        self.last_prediction_round = round_id;
+        self.challenge_count += 1;
+    }
+
+    /// Evaluate prediction after round ends. Called during checkpoint.
+    /// Returns the skill multiplier to apply.
+    pub fn evaluate_prediction(&mut self, winning_square: u8, round_id: u64) -> u64 {
+        // Only evaluate if prediction was made for this round
+        if self.last_prediction_round != round_id || self.prediction == Self::NO_PREDICTION {
+            // No prediction made - reset streak but don't penalize score
+            self.streak = 0;
+            return 100; // 1.0x multiplier
+        }
+
+        if self.prediction == winning_square {
+            // Correct prediction!
+            self.skill_score += Self::POINTS_PER_WIN;
+            self.streak += 1;
+            self.challenge_wins += 1;
+        } else {
+            // Wrong prediction - reset streak
+            self.streak = 0;
+        }
+
+        // Clear prediction for next round
+        self.prediction = Self::NO_PREDICTION;
+
+        // Return multiplier to apply to rewards
+        self.calculate_skill_multiplier()
     }
 }
 

@@ -32,6 +32,9 @@ pub enum OreInstruction {
     MigrateAutomation = 22,
     Liq = 25,
     Initialize = 26,
+
+    // Skill System (v0.2)
+    SubmitPrediction = 27,
 }
 
 #[repr(C)]
@@ -189,6 +192,14 @@ pub struct Initialize {
     pub var_address: [u8; 32],
 }
 
+/// v0.2: Submit a prediction for the winning square.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+pub struct SubmitPrediction {
+    /// The predicted winning square (0-24).
+    pub square: u8,
+}
+
 instruction!(OreInstruction, Automate);
 instruction!(OreInstruction, Close);
 instruction!(OreInstruction, Checkpoint);
@@ -213,3 +224,4 @@ instruction!(OreInstruction, SetVarAddress);
 instruction!(OreInstruction, MigrateAutomation);
 instruction!(OreInstruction, Liq);
 instruction!(OreInstruction, Initialize);
+instruction!(OreInstruction, SubmitPrediction);

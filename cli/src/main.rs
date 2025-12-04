@@ -135,6 +135,13 @@ async fn main() {
         "init" => {
             init(&rpc, &payer).await.unwrap();
         }
+        // v0.2 Skill System
+        "predict" => {
+            predict(&rpc, &payer).await.unwrap();
+        }
+        "skill" => {
+            log_skill(&rpc, &payer).await.unwrap();
+        }
         _ => panic!("Invalid command"),
     };
 }
@@ -1237,4 +1244,80 @@ where
             _ => return Err(anyhow::anyhow!("Failed to get program accounts: {}", err)),
         },
     }
+}
+
+// ============ v0.2 Skill System CLI ============
+
+/// Submit a prediction for the winning square.
+/// Usage: COMMAND=predict SQUARE=<0-24> cargo run -p skill-cli
+async fn predict(
+    rpc: &RpcClient,
+    payer: &solana_sdk::signer::keypair::Keypair,
+) -> Result<(), anyhow::Error> {
+    // Read the predicted square from environment variable
+    let square: u8 = std::env::var("SQUARE")
+        .expect("Missing SQUARE env var (0-24)")
+        .parse()
+        .expect("SQUARE must be a number 0-24");
+
+    if square > 24 {
+        return Err(anyhow::anyhow!("SQUARE must be 0-24, got {}", square));
+    }
+
+    // Get current board state
+    let board = get_board(rpc).await?;
+    println!("Submitting prediction for round {}", board.round_id);
+    println!("Predicted square: {}", square);
+
+    // Build and submit transaction
+    let ix = skill_api::sdk::submit_prediction(payer.pubkey(), square);
+    let sig = submit_transaction(rpc, payer, &[ix]).await?;
+
+    println!();
+    println!("Prediction submitted!");
+    println!("Transaction: {}", sig);
+
+    Ok(())
+}
+
+/// Display skill statistics for a miner.
+/// Usage: COMMAND=skill cargo run -p skill-cli
+async fn log_skill(
+    rpc: &RpcClient,
+    payer: &solana_sdk::signer::keypair::Keypair,
+) -> Result<(), anyhow::Error> {
+    // Get miner account
+    let authority = std::env::var("AUTHORITY")
+        .map(|s| Pubkey::from_str(&s).expect("Invalid AUTHORITY"))
+        .unwrap_or(payer.pubkey());
+
+    let miner = get_miner(rpc, authority).await?;
+
+    // Calculate skill multiplier
+    let multiplier = miner.calculate_skill_multiplier();
+    let multiplier_display = multiplier as f64 / 100.0;
+
+    println!();
+    println!("Skill Statistics for {}", authority);
+    println!("====================================");
+    println!("  Skill Score:      {}", miner.skill_score);
+    println!("  Current Streak:   {}", miner.streak);
+    println!("  Skill Multiplier: {:.2}x", multiplier_display);
+    println!();
+    println!("Challenge Stats:");
+    println!("  Total Attempts:   {}", miner.challenge_count);
+    println!("  Total Wins:       {}", miner.challenge_wins);
+    if miner.challenge_count > 0 {
+        let win_rate = (miner.challenge_wins as f64 / miner.challenge_count as f64) * 100.0;
+        println!("  Win Rate:         {:.1}%", win_rate);
+    }
+    println!();
+    println!("Current Prediction:");
+    if miner.prediction == Miner::NO_PREDICTION {
+        println!("  None (use COMMAND=predict SQUARE=<0-24> to submit)");
+    } else {
+        println!("  Square: {} (for round {})", miner.prediction, miner.last_prediction_round);
+    }
+
+    Ok(())
 }
