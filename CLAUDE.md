@@ -9,11 +9,19 @@ SKILL is a Solana-based skill-based mining protocol, forked from ORE. The key di
 ## Build Commands
 
 ```bash
-# Build the core packages (api, program, cli)
-cargo build -p skill-api -p skill-program -p skill-cli
+# Using Makefile (recommended)
+make build      # Build all workspace packages
+make test       # Run Solana BPF tests
+make format     # Format all code
+make lint       # Run clippy linter
+make check      # Full check (format + lint + build)
+make help       # Show all available commands
 
-# Build and run tests using Solana BPF toolchain
+# Or directly with Cargo
+cargo build -p skill-api -p skill-program -p skill-cli
 cargo test-sbf
+cargo fmt --all
+cargo clippy --all-targets -- -D warnings
 
 # Run CLI commands
 KEYPAIR=~/.config/solana/id.json RPC=https://api.devnet.solana.com COMMAND=board cargo run -p skill-cli
@@ -106,6 +114,12 @@ This creates:
 | Treasury Tokens | `FyDJZfkXcL6LWfS8dZyvUQAUrTp44ewNYXA3R69bwR4q` |
 
 **Admin:** `BYnoVgMLftH28ERdnrWjeGmZvQwAmDm9CqCPiGNRBTHu`
+
+## Development Tools
+
+- **`rustfmt.toml`** - Code formatting (max_width=100, module imports)
+- **`Makefile`** - Common commands (`make build`, `make test`, `make lint`)
+- **`.editorconfig`** - Cross-editor settings (4-space indent, UTF-8)
 
 ## Development Notes
 
