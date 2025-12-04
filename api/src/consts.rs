@@ -2,7 +2,7 @@ use const_crypto::ed25519;
 use solana_program::{pubkey, pubkey::Pubkey};
 
 /// The authority allowed to initialize the program.
-pub const ADMIN_ADDRESS: Pubkey = pubkey!("HBUh9g46wk2X89CvaNN15UmsznP59rh6od1h8JwYAopk");
+pub const ADMIN_ADDRESS: Pubkey = pubkey!("BYnoVgMLftH28ERdnrWjeGmZvQwAmDm9CqCPiGNRBTHu");
 
 /// The decimal precision of the ORE token.
 /// There are 100 billion indivisible units per ORE (called "grams").
@@ -71,6 +71,9 @@ pub const ROUND: &[u8] = b"round";
 /// The seed of the treasury account PDA.
 pub const TREASURY: &[u8] = b"treasury";
 
+/// The seed of the mint account PDA.
+pub const MINT: &[u8] = b"mint";
+
 /// Program id for const pda derivations
 const PROGRAM_ID: [u8; 32] = unsafe { *(&crate::id() as *const Pubkey as *const [u8; 32]) };
 
@@ -78,8 +81,9 @@ const PROGRAM_ID: [u8; 32] = unsafe { *(&crate::id() as *const Pubkey as *const 
 pub const CONFIG_ADDRESS: Pubkey =
     Pubkey::new_from_array(ed25519::derive_program_address(&[CONFIG], &PROGRAM_ID).0);
 
-/// The address of the mint account.
-pub const MINT_ADDRESS: Pubkey = pubkey!("oreoU2P8bN6jkk3jbaiVxYnG1dCXcYxwhwyK9jSybcp");
+/// The address of the SKILL mint account (derived PDA).
+pub const MINT_ADDRESS: Pubkey =
+    Pubkey::new_from_array(ed25519::derive_program_address(&[MINT], &PROGRAM_ID).0);
 
 /// The address of the sol mint account.
 pub const SOL_MINT: Pubkey = pubkey!("So11111111111111111111111111111111111111112");

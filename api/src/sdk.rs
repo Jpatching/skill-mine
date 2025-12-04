@@ -555,3 +555,39 @@ pub fn migrate_automation(signer: Pubkey, authority: Pubkey) -> Instruction {
         data: MigrateAutomation {}.to_bytes(),
     }
 }
+
+// let [signer_info, board_info, config_info, mint_info, treasury_info, treasury_tokens_info, system_program, token_program, associated_token_program, rent_sysvar] =
+
+pub fn initialize(
+    signer: Pubkey,
+    admin: Pubkey,
+    fee_collector: Pubkey,
+    var_address: Pubkey,
+) -> Instruction {
+    let board_address = board_pda().0;
+    let config_address = config_pda().0;
+    let mint_address = mint_pda().0;
+    let treasury_address = treasury_pda().0;
+    let treasury_tokens_address = get_associated_token_address(&treasury_address, &mint_address);
+    Instruction {
+        program_id: crate::ID,
+        accounts: vec![
+            AccountMeta::new(signer, true),
+            AccountMeta::new(board_address, false),
+            AccountMeta::new(config_address, false),
+            AccountMeta::new(mint_address, false),
+            AccountMeta::new(treasury_address, false),
+            AccountMeta::new(treasury_tokens_address, false),
+            AccountMeta::new_readonly(system_program::ID, false),
+            AccountMeta::new_readonly(spl_token::ID, false),
+            AccountMeta::new_readonly(spl_associated_token_account::ID, false),
+            AccountMeta::new_readonly(sysvar::rent::ID, false),
+        ],
+        data: Initialize {
+            admin: admin.to_bytes(),
+            fee_collector: fee_collector.to_bytes(),
+            var_address: var_address.to_bytes(),
+        }
+        .to_bytes(),
+    }
+}

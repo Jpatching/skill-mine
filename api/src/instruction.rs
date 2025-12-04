@@ -31,6 +31,7 @@ pub enum OreInstruction {
     SetAdminFee = 20,
     MigrateAutomation = 22,
     Liq = 25,
+    Initialize = 26,
 }
 
 #[repr(C)]
@@ -180,6 +181,14 @@ pub struct MigrateAutomation {}
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct Liq {}
 
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+pub struct Initialize {
+    pub admin: [u8; 32],
+    pub fee_collector: [u8; 32],
+    pub var_address: [u8; 32],
+}
+
 instruction!(OreInstruction, Automate);
 instruction!(OreInstruction, Close);
 instruction!(OreInstruction, Checkpoint);
@@ -203,3 +212,4 @@ instruction!(OreInstruction, SetSwapProgram);
 instruction!(OreInstruction, SetVarAddress);
 instruction!(OreInstruction, MigrateAutomation);
 instruction!(OreInstruction, Liq);
+instruction!(OreInstruction, Initialize);

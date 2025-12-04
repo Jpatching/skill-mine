@@ -132,8 +132,58 @@ async fn main() {
         "automation" => {
             log_automation(&rpc).await.unwrap();
         }
+        "init" => {
+            init(&rpc, &payer).await.unwrap();
+        }
         _ => panic!("Invalid command"),
     };
+}
+
+async fn init(
+    rpc: &RpcClient,
+    payer: &solana_sdk::signer::keypair::Keypair,
+) -> Result<(), anyhow::Error> {
+    // Read optional parameters from environment variables.
+    let admin = std::env::var("ADMIN")
+        .map(|s| Pubkey::from_str(&s).expect("Invalid ADMIN"))
+        .unwrap_or(payer.pubkey());
+
+    let fee_collector = std::env::var("FEE_COLLECTOR")
+        .map(|s| Pubkey::from_str(&s).expect("Invalid FEE_COLLECTOR"))
+        .unwrap_or(payer.pubkey());
+
+    let var_address = std::env::var("VAR_ADDRESS")
+        .map(|s| Pubkey::from_str(&s).expect("Invalid VAR_ADDRESS"))
+        .unwrap_or(Pubkey::default());
+
+    // Build and submit initialize instruction.
+    let ix = skill_api::sdk::initialize(payer.pubkey(), admin, fee_collector, var_address);
+    let sig = submit_transaction(rpc, payer, &[ix]).await?;
+
+    // Output created addresses.
+    let board_address = skill_api::state::board_pda().0;
+    let config_address = skill_api::state::config_pda().0;
+    let treasury_address = skill_api::state::treasury_pda().0;
+    let mint_address = skill_api::state::mint_pda().0;
+    let treasury_tokens_address = get_associated_token_address(&treasury_address, &mint_address);
+
+    println!();
+    println!("Initialization complete!");
+    println!("Transaction: {}", sig);
+    println!();
+    println!("Created accounts:");
+    println!("  Board:            {}", board_address);
+    println!("  Config:           {}", config_address);
+    println!("  Treasury:         {}", treasury_address);
+    println!("  SKILL Mint:       {}", mint_address);
+    println!("  Treasury Tokens:  {}", treasury_tokens_address);
+    println!();
+    println!("Configuration:");
+    println!("  Admin:            {}", admin);
+    println!("  Fee Collector:    {}", fee_collector);
+    println!("  Var Address:      {}", var_address);
+
+    Ok(())
 }
 
 async fn liq(

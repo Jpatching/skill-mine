@@ -8,6 +8,7 @@ mod claim_yield;
 mod close;
 mod deploy;
 mod deposit;
+mod initialize;
 mod liq;
 mod log;
 mod migrate_automation;
@@ -32,6 +33,7 @@ use claim_yield::*;
 use close::*;
 use deploy::*;
 use deposit::*;
+use initialize::*;
 use liq::*;
 use log::*;
 use migrate_automation::*;
@@ -85,6 +87,7 @@ pub fn process_instruction(
         OreInstruction::SetAdminFee => process_set_admin_fee(accounts, data)?,
         OreInstruction::MigrateAutomation => process_migrate_automation(accounts, data)?,
         OreInstruction::Liq => process_liq(accounts, data)?,
+        OreInstruction::Initialize => process_initialize(accounts, data)?,
     }
 
     Ok(())

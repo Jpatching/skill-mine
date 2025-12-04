@@ -1,9 +1,7 @@
 use entropy_api::state::Var;
 use skill_api::prelude::*;
-use solana_program::{keccak::hashv, log::sol_log, native_token::lamports_to_sol, pubkey};
+use solana_program::{keccak::hashv, log::sol_log, native_token::lamports_to_sol};
 use steel::*;
-
-pub const ORE_VAR_ADDRESS: Pubkey = pubkey!("BWCaDY96Xe4WkFq1M7UiCCRcChsJ3p51L5KrGzhxgm2E");
 
 /// Deploys capital to prospect on a square.
 pub fn process_deploy(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
@@ -50,8 +48,8 @@ pub fn process_deploy(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResul
         let [var_info, entropy_program] = entropy_accounts else {
             return Err(ProgramError::NotEnoughAccountKeys);
         };
+        // Validate var account - must be owned by entropy program with board as authority
         var_info
-            .has_address(&ORE_VAR_ADDRESS)?
             .as_account::<Var>(&entropy_api::ID)?
             .assert(|v| v.authority == *board_info.key)?;
         entropy_program.is_program(&entropy_api::ID)?;
