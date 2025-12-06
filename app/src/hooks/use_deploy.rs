@@ -654,3 +654,137 @@ pub async fn play_transaction(
 ) -> Result<String, String> {
     Err("Play only available in web mode".to_string())
 }
+
+// ============ CLAIM TRANSACTIONS ============
+
+const CLAIM_SOL_DISCRIMINATOR: u8 = 3;
+const CLAIM_ORE_DISCRIMINATOR: u8 = 4;
+
+/// Claim SOL rewards
+#[cfg(feature = "web")]
+pub async fn claim_sol_transaction(authority: &str) -> Result<String, String> {
+    let miner = miner_pda(authority);
+    let blockhash = fetch_recent_blockhash(RPC_URL).await?;
+
+    let accounts = vec![
+        (authority, true, true),      // signer, writable
+        (&miner as &str, true, false), // miner, writable
+        (SYSTEM_PROGRAM, false, false), // system_program, readonly
+    ];
+
+    let ix_data = vec![CLAIM_SOL_DISCRIMINATOR];
+
+    let tx_bytes = build_transaction_bytes(
+        authority,
+        &accounts,
+        PROGRAM_ID,
+        &ix_data,
+        &blockhash,
+    )?;
+
+    send_transaction_phantom(&tx_bytes).await
+}
+
+/// Claim ORE (SKILL) token rewards
+#[cfg(feature = "web")]
+pub async fn claim_ore_transaction(authority: &str) -> Result<String, String> {
+    let miner = miner_pda(authority);
+    let treasury = treasury_pda();
+    let mint = mint_pda();
+    let treasury_tokens = treasury_tokens_pda();
+
+    // Derive recipient's associated token account
+    let recipient_ata = derive_associated_token_account(authority, &mint);
+
+    let blockhash = fetch_recent_blockhash(RPC_URL).await?;
+
+    // Accounts from sdk.rs claim_ore:
+    // signer, miner, mint, recipient, treasury, treasury_tokens, system, token_program, ata_program
+    let accounts = vec![
+        (authority, true, true),                   // signer
+        (&miner as &str, true, false),             // miner
+        (&mint as &str, false, false),             // mint (readonly)
+        (&recipient_ata as &str, true, false),     // recipient ATA
+        (&treasury as &str, true, false),          // treasury
+        (&treasury_tokens as &str, true, false),   // treasury_tokens
+        (SYSTEM_PROGRAM, false, false),            // system_program
+        (TOKEN_PROGRAM, false, false),             // token_program
+        (ASSOCIATED_TOKEN_PROGRAM, false, false),  // ata_program
+    ];
+
+    let ix_data = vec![CLAIM_ORE_DISCRIMINATOR];
+
+    let tx_bytes = build_transaction_bytes(
+        authority,
+        &accounts,
+        PROGRAM_ID,
+        &ix_data,
+        &blockhash,
+    )?;
+
+    send_transaction_phantom(&tx_bytes).await
+}
+
+const ASSOCIATED_TOKEN_PROGRAM: &str = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL";
+
+/// Derive associated token account address
+fn derive_associated_token_account(owner: &str, mint: &str) -> String {
+    let owner_bytes = bs58::decode(owner).into_vec().unwrap_or_default();
+    let mint_bytes = bs58::decode(mint).into_vec().unwrap_or_default();
+    let ata_program_bytes = bs58::decode(ASSOCIATED_TOKEN_PROGRAM).into_vec().unwrap_or_default();
+    let token_program_bytes = bs58::decode(TOKEN_PROGRAM).into_vec().unwrap_or_default();
+
+    derive_pda(
+        &[&owner_bytes, &token_program_bytes, &mint_bytes],
+        ASSOCIATED_TOKEN_PROGRAM,
+    )
+}
+
+/// Generic send transaction via Phantom
+#[cfg(feature = "web")]
+async fn send_transaction_phantom(tx_bytes: &[u8]) -> Result<String, String> {
+    let window = web_sys::window().ok_or("No window")?;
+
+    let solana = Reflect::get(&window, &JsValue::from_str("solana"))
+        .map_err(|_| "Phantom not found")?;
+
+    if solana.is_undefined() {
+        return Err("Phantom wallet not connected".to_string());
+    }
+
+    let tx_array = Uint8Array::new_with_length(tx_bytes.len() as u32);
+    tx_array.copy_from(tx_bytes);
+
+    let sign_fn = Reflect::get(&solana, &JsValue::from_str("signAndSendTransaction"))
+        .map_err(|_| "No signAndSendTransaction method")?;
+
+    let sign_fn: js_sys::Function = sign_fn.dyn_into()
+        .map_err(|_| "signAndSendTransaction is not a function")?;
+
+    let promise = sign_fn.call1(&solana, &tx_array.into())
+        .map_err(|e| format!("Sign call failed: {:?}", e))?;
+
+    let promise: Promise = promise.dyn_into()
+        .map_err(|_| "Not a promise")?;
+
+    let result = wasm_bindgen_futures::JsFuture::from(promise)
+        .await
+        .map_err(|e| format!("Transaction rejected: {:?}", e))?;
+
+    let signature = Reflect::get(&result, &JsValue::from_str("signature"))
+        .ok()
+        .and_then(|s| s.as_string())
+        .ok_or("No signature in response")?;
+
+    Ok(signature)
+}
+
+#[cfg(not(feature = "web"))]
+pub async fn claim_sol_transaction(_authority: &str) -> Result<String, String> {
+    Err("Claim only available in web mode".to_string())
+}
+
+#[cfg(not(feature = "web"))]
+pub async fn claim_ore_transaction(_authority: &str) -> Result<String, String> {
+    Err("Claim only available in web mode".to_string())
+}

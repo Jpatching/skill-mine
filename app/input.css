@@ -1,0 +1,181 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ORE Design System Colors */
+:root {
+  /* Backgrounds */
+  --surface-base: #0F0E11;
+  --surface-canvas: #0C0C0E;
+  --surface-elevated: #131216;
+  --surface-floating: #1A191F;
+
+  /* Text */
+  --text-high: #FAFAFA;
+  --text-mid: #D1D1D1;
+  --text-low: #707070;
+  --text-disabled: #585661;
+
+  /* Interactive */
+  --control-primary: #F5F5F5;
+  --control-secondary: #26242D;
+  --control-tertiary: #1D1C22;
+  --gold: #ECC771;
+  --danger: #CC3B28;
+}
+
+@layer base {
+  body {
+    background-color: var(--surface-base);
+    color: var(--text-high);
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
+  }
+}
+
+@layer components {
+  /* Text utility classes */
+  .text-high { color: var(--text-high); }
+  .text-mid { color: var(--text-mid); }
+  .text-low { color: var(--text-low); }
+  .text-disabled { color: var(--text-disabled); }
+  .text-gold { color: var(--gold); }
+
+  /* Surface classes */
+  .elevated {
+    background-color: var(--surface-elevated);
+  }
+
+  .elevated-control {
+    background-color: var(--surface-elevated);
+    transition: background-color 0.15s;
+  }
+
+  .elevated-control:hover {
+    background-color: var(--surface-floating);
+  }
+
+  .elevated-border {
+    border-color: var(--control-secondary);
+  }
+
+  /* Button styles */
+  .btn {
+    @apply px-4 py-2 rounded-lg font-semibold transition-all duration-200;
+  }
+
+  .btn-primary {
+    @apply bg-skill-500 hover:bg-skill-600 text-white;
+  }
+
+  .btn-secondary {
+    @apply bg-gray-700 hover:bg-gray-600 text-gray-100;
+  }
+
+  .controls-primary {
+    background-color: var(--control-primary);
+    color: var(--surface-base);
+    transition: all 0.15s;
+  }
+
+  .controls-primary:hover {
+    background-color: var(--text-high);
+    transform: scale(1.02);
+  }
+
+  .controls-primary:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+    transform: none;
+  }
+
+  .controls-gold {
+    border: 1px solid var(--gold);
+    color: var(--gold);
+    background-color: transparent;
+    transition: all 0.15s;
+  }
+
+  .controls-gold:hover {
+    background-color: var(--gold);
+    color: var(--surface-base);
+  }
+
+  /* Card styles */
+  .card {
+    background-color: var(--surface-elevated);
+    border: 1px solid var(--control-secondary);
+    @apply rounded-xl p-6;
+  }
+
+  /* Board square styles - ORE-inspired */
+  .board-square {
+    background-color: var(--surface-elevated);
+    border: 1px solid var(--control-secondary);
+    transition: all 0.15s;
+  }
+
+  .board-square:hover {
+    background-color: var(--surface-floating);
+    border-color: var(--text-low);
+  }
+
+  .board-square-selected {
+    border-color: var(--gold) !important;
+    box-shadow: 0 0 0 1px var(--gold);
+  }
+
+  .board-square-winning {
+    border-color: var(--gold) !important;
+    background-color: rgba(236, 199, 113, 0.1) !important;
+    animation: pulse 2s infinite;
+  }
+
+  /* Winner reveal animations */
+  .board-square-winner-glow {
+    border-color: var(--gold) !important;
+    background-color: rgba(236, 199, 113, 0.15) !important;
+    animation: winner-glow 1.5s ease-in-out infinite;
+    transform: scale(1.02);
+    z-index: 10;
+  }
+
+  .board-square-loser {
+    opacity: 0.4;
+    transform: scale(0.95);
+    border-color: var(--control-secondary) !important;
+    background-color: var(--surface-base) !important;
+  }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.7; }
+  }
+
+  @keyframes winner-glow {
+    0%, 100% {
+      box-shadow: 0 0 10px var(--gold), 0 0 20px rgba(236, 199, 113, 0.3);
+    }
+    50% {
+      box-shadow: 0 0 20px var(--gold), 0 0 40px rgba(236, 199, 113, 0.5), 0 0 60px rgba(236, 199, 113, 0.2);
+    }
+  }
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--surface-base);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--control-secondary);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-low);
+}
