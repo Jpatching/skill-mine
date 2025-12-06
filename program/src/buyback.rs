@@ -1,8 +1,9 @@
 use skill_api::prelude::*;
 use solana_program::log::sol_log;
-use solana_program::native_token::lamports_to_sol;
 use spl_token::amount_to_ui_amount;
 use steel::*;
+
+const LAMPORTS_PER_SOL: u64 = 1_000_000_000;
 
 /// Swap vaulted SOL to ORE, and burn the ORE.
 pub fn process_buyback(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
@@ -102,7 +103,7 @@ pub fn process_buyback(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResu
     sol_log(
         &format!(
             "📈 Swapped {} SOL into {} ORE",
-            lamports_to_sol(pre_swap_sol_balance),
+            pre_swap_sol_balance as f64 / LAMPORTS_PER_SOL as f64,
             amount_to_ui_amount(total_ore, TOKEN_DECIMALS),
         )
         .as_str(),

@@ -1,6 +1,7 @@
 use std::{collections::HashMap, str::FromStr};
 
-use entropy_api::prelude::*;
+// Entropy API only needed for legacy admin commands (new_var)
+use entropy_api::state as entropy_state;
 use jup_swap::{
     quote::QuoteRequest,
     swap::SwapRequest,
@@ -19,7 +20,7 @@ use solana_sdk::{
     address_lookup_table::{state::AddressLookupTable, AddressLookupTableAccount},
     compute_budget::ComputeBudgetInstruction,
     message::{v0::Message, VersionedMessage},
-    native_token::{lamports_to_sol, LAMPORTS_PER_SOL},
+    native_token::LAMPORTS_PER_SOL,
     pubkey::Pubkey,
     rent::Rent,
     signature::{read_keypair_file, Signature, Signer},
@@ -74,6 +75,9 @@ async fn main() {
         // }
         "deploy" => {
             deploy(&rpc, &payer).await.unwrap();
+        }
+        "play" => {
+            play(&rpc, &payer).await.unwrap();
         }
         "stake" => {
             log_stake(&rpc, &payer).await.unwrap();
@@ -312,7 +316,7 @@ async fn new_var(
     let samples = std::env::var("SAMPLES").expect("Missing SAMPLES env var");
     let samples = u64::from_str(&samples).expect("Invalid SAMPLES");
     let board_address = board_pda().0;
-    let var_address = entropy_api::state::var_pda(board_address, 0).0;
+    let var_address = entropy_state::var_pda(board_address, 0).0;
     println!("Var address: {}", var_address);
     let ix = skill_api::sdk::new_var(payer.pubkey(), provider, 0, commit.to_bytes(), samples);
     submit_transaction(rpc, payer, &[ix]).await?;
@@ -502,56 +506,41 @@ pub async fn get_address_lookup_table_accounts(
     Ok(accounts)
 }
 
-pub const ORE_VAR_ADDRESS: Pubkey = pubkey!("BWCaDY96Xe4WkFq1M7UiCCRcChsJ3p51L5KrGzhxgm2E");
-
+/// Schelling Point: Reset determines winner by majority vote (no entropy needed)
 async fn reset(
     rpc: &RpcClient,
     payer: &solana_sdk::signer::keypair::Keypair,
 ) -> Result<(), anyhow::Error> {
     let board = get_board(rpc).await?;
-    let var = get_var(rpc, ORE_VAR_ADDRESS).await?;
-
-    println!("Var: {:?}", var);
-
-    let client = reqwest::Client::new();
-    let url = format!("https://entropy-api.onrender.com/var/{ORE_VAR_ADDRESS}/seed");
-    let response = client
-        .get(url)
-        .send()
-        .await?
-        .json::<entropy_types::response::GetSeedResponse>()
-        .await?;
-    println!("Entropy seed: {:?}", response);
-
     let config = get_config(rpc).await?;
-    let sample_ix = entropy_api::sdk::sample(payer.pubkey(), ORE_VAR_ADDRESS);
-    let reveal_ix = entropy_api::sdk::reveal(payer.pubkey(), ORE_VAR_ADDRESS, response.seed);
+
+    // Get current round to show what will be the winning square
+    if let Ok(round) = get_round(rpc, board.round_id).await {
+        // Find the winning square (argmax of deployed)
+        let (winning_square, max_deployed) = round
+            .deployed
+            .iter()
+            .enumerate()
+            .max_by(|(i1, v1), (i2, v2)| v1.cmp(v2).then_with(|| i2.cmp(i1)))
+            .map(|(i, &v)| (i, v))
+            .unwrap_or((0, 0));
+
+        println!("Schelling Point Reset");
+        println!("  Round ID: {}", board.round_id);
+        println!("  Total deployed: {} lamports", round.total_deployed);
+        println!("  Winning square: #{} ({} lamports)", winning_square, max_deployed);
+        println!("  Miners on winner: {}", round.count[winning_square]);
+    }
+
     let reset_ix = skill_api::sdk::reset(
         payer.pubkey(),
         config.fee_collector,
         board.round_id,
         Pubkey::default(),
     );
-    let sig = submit_transaction(rpc, payer, &[sample_ix, reveal_ix, reset_ix]).await?;
-    println!("Reset: {}", sig);
+    let sig = submit_transaction(rpc, payer, &[reset_ix]).await?;
+    println!("Reset transaction: {}", sig);
 
-    // let slot_hashes = get_slot_hashes(rpc).await?;
-    // if let Some(slot_hash) = slot_hashes.get(&board.end_slot) {
-    //     let id = get_winning_square(&slot_hash.to_bytes());
-    //     // let square = get_square(rpc).await?;
-    //     println!("Winning square: {}", id);
-    //     // println!("Miners: {:?}", square.miners);
-    //     // miners = square.miners[id as usize].to_vec();
-    // };
-
-    // let reset_ix = skill_api::sdk::reset(
-    //     payer.pubkey(),
-    //     config.fee_collector,
-    //     board.round_id,
-    //     Pubkey::default(),
-    // );
-    // // simulate_transaction(rpc, payer, &[reset_ix]).await;
-    // submit_transaction(rpc, payer, &[reset_ix]).await?;
     Ok(())
 }
 
@@ -574,6 +563,93 @@ async fn deploy(
         squares,
     );
     submit_transaction(rpc, payer, &[ix]).await?;
+    Ok(())
+}
+
+/// Smart play command that automatically handles round transitions.
+/// If the current round has ended, it will reset first, then deploy.
+/// This is the main entry point for players - no external crank needed!
+async fn play(
+    rpc: &RpcClient,
+    payer: &solana_sdk::signer::keypair::Keypair,
+) -> Result<(), anyhow::Error> {
+    // Parse arguments
+    let amount = std::env::var("AMOUNT").expect("Missing AMOUNT env var");
+    let amount = u64::from_str(&amount).expect("Invalid AMOUNT");
+    let square_id = std::env::var("SQUARE").expect("Missing SQUARE env var");
+    let square_id = u64::from_str(&square_id).expect("Invalid SQUARE");
+
+    // Get current state
+    let board = get_board(rpc).await?;
+    let config = get_config(rpc).await?;
+    let clock = get_clock(rpc).await?;
+
+    // Check if round has ended
+    let round_ended = board.end_slot != u64::MAX
+        && clock.slot >= board.end_slot + INTERMISSION_SLOTS;
+
+    let mut squares = [false; 25];
+    squares[square_id as usize] = true;
+
+    if round_ended {
+        println!("═══════════════════════════════════════════════════════════");
+        println!("  Round {} has ended. Resetting and deploying...", board.round_id);
+        println!("═══════════════════════════════════════════════════════════");
+
+        // Show what will happen
+        if let Ok(round) = get_round(rpc, board.round_id).await {
+            let (winning_square, max_deployed) = round
+                .deployed
+                .iter()
+                .enumerate()
+                .max_by(|(i1, v1), (i2, v2)| v1.cmp(v2).then_with(|| i2.cmp(i1)))
+                .map(|(i, &v)| (i, v))
+                .unwrap_or((0, 0));
+
+            println!("  Winning square: #{} ({} lamports)", winning_square, max_deployed);
+            println!("  Total deployed: {} lamports", round.total_deployed);
+            println!("  Winners count: {}", round.count[winning_square]);
+        }
+
+        println!("  Deploying {} lamports to square #{} in round {}", amount, square_id, board.round_id + 1);
+        println!("═══════════════════════════════════════════════════════════");
+    } else if board.end_slot == u64::MAX {
+        println!("═══════════════════════════════════════════════════════════");
+        println!("  No active round. Your deploy will start round {}!", board.round_id);
+        println!("  Deploying {} lamports to square #{}", amount, square_id);
+        println!("═══════════════════════════════════════════════════════════");
+    } else {
+        let slots_remaining = board.end_slot.saturating_sub(clock.slot);
+        let seconds_remaining = slots_remaining * 400 / 1000; // ~400ms per slot
+        println!("═══════════════════════════════════════════════════════════");
+        println!("  Round {} active - {} slots (~{}s) remaining", board.round_id, slots_remaining, seconds_remaining);
+        println!("  Deploying {} lamports to square #{}", amount, square_id);
+        println!("═══════════════════════════════════════════════════════════");
+    }
+
+    // Build and submit transaction (reset + deploy if needed)
+    let instructions = skill_api::sdk::play(
+        payer.pubkey(),
+        amount,
+        squares,
+        config.fee_collector,
+        board.round_id,
+        round_ended,
+    );
+
+    let sig = submit_transaction(rpc, payer, &instructions).await?;
+    println!("Transaction: {}", sig);
+
+    // Show updated state
+    let new_board = get_board(rpc).await?;
+    println!("\nBoard state after play:");
+    println!("  Round ID: {}", new_board.round_id);
+    if new_board.end_slot != u64::MAX {
+        let new_clock = get_clock(rpc).await?;
+        let slots_remaining = new_board.end_slot.saturating_sub(new_clock.slot);
+        println!("  Slots remaining: {}", slots_remaining);
+    }
+
     Ok(())
 }
 
@@ -769,13 +845,13 @@ async fn log_automation(rpc: &RpcClient) -> Result<(), anyhow::Error> {
     let required_rent = Rent::default().minimum_balance(size);
     println!("Automation");
     println!("  address: {}", address);
-    println!("  amount: {} SOL", lamports_to_sol(automation.amount));
-    println!("  required rent: {} SOL", lamports_to_sol(required_rent));
+    println!("  amount: {} SOL", automation.amount as f64 / LAMPORTS_PER_SOL as f64);
+    println!("  required rent: {} SOL", required_rent as f64 / LAMPORTS_PER_SOL as f64);
     println!("  authority: {}", automation.authority);
-    println!("  balance: {} SOL", lamports_to_sol(automation.balance));
-    println!("  lamports: {} SOL", lamports_to_sol(account_balance));
+    println!("  balance: {} SOL", automation.balance as f64 / LAMPORTS_PER_SOL as f64);
+    println!("  lamports: {} SOL", account_balance as f64 / LAMPORTS_PER_SOL as f64);
     println!("  executor: {}", automation.executor);
-    println!("  fee: {} SOL", lamports_to_sol(automation.fee));
+    println!("  fee: {} SOL", automation.fee as f64 / LAMPORTS_PER_SOL as f64);
     println!("  mask: {}", automation.mask);
     println!("  strategy: {}", automation.strategy);
     println!("  reload: {}", automation.reload);
@@ -802,7 +878,7 @@ async fn log_treasury(rpc: &RpcClient) -> Result<(), anyhow::Error> {
     let treasury = get_treasury(rpc).await?;
     println!("Treasury");
     println!("  address: {}", treasury_address);
-    println!("  balance: {} SOL", lamports_to_sol(treasury.balance));
+    println!("  balance: {} SOL", treasury.balance as f64 / LAMPORTS_PER_SOL as f64);
     println!(
         "  motherlode: {} ORE",
         amount_to_ui_amount(treasury.motherlode, TOKEN_DECIMALS)
@@ -835,7 +911,6 @@ async fn log_round(rpc: &RpcClient) -> Result<(), anyhow::Error> {
     let id = u64::from_str(&id).expect("Invalid ID");
     let round_address = round_pda(id).0;
     let round = get_round(rpc, id).await?;
-    let rng = round.rng();
     println!("Round");
     println!("  Address: {}", round_address);
     println!("  Count: {:?}", round.count);
@@ -850,12 +925,12 @@ async fn log_round(rpc: &RpcClient) -> Result<(), anyhow::Error> {
     println!("  Total deployed: {}", round.total_deployed);
     println!("  Total vaulted: {}", round.total_vaulted);
     println!("  Total winnings: {}", round.total_winnings);
-    if let Some(rng) = rng {
-        println!("  Winning square: {}", round.winning_square(rng));
+    println!("  Winning square: {}", round.winning_square);
+    if round.is_finalized() {
+        println!("  Round finalized: yes (slot_hash sampled)");
+    } else {
+        println!("  Round finalized: no (waiting for reset)");
     }
-    // if round.slot_hash != [0; 32] {
-    //     println!("  Winning square: {}", get_winning_square(&round.slot_hash));
-    // }
     Ok(())
 }
 
@@ -872,7 +947,7 @@ async fn log_miner(
     println!("  authority: {}", authority);
     println!("  deployed: {:?}", miner.deployed);
     println!("  cumulative: {:?}", miner.cumulative);
-    println!("  rewards_sol: {} SOL", lamports_to_sol(miner.rewards_sol));
+    println!("  rewards_sol: {} SOL", miner.rewards_sol as f64 / LAMPORTS_PER_SOL as f64);
     println!(
         "  rewards_ore: {} ORE",
         amount_to_ui_amount(miner.rewards_ore, TOKEN_DECIMALS)
@@ -885,7 +960,7 @@ async fn log_miner(
     println!("  checkpoint_id: {}", miner.checkpoint_id);
     println!(
         "  lifetime_rewards_sol: {} SOL",
-        lamports_to_sol(miner.lifetime_rewards_sol)
+        miner.lifetime_rewards_sol as f64 / LAMPORTS_PER_SOL as f64
     );
     println!(
         "  lifetime_rewards_ore: {} ORE",
@@ -971,11 +1046,7 @@ async fn get_board(rpc: &RpcClient) -> Result<Board, anyhow::Error> {
     Ok(*board)
 }
 
-async fn get_var(rpc: &RpcClient, address: Pubkey) -> Result<Var, anyhow::Error> {
-    let account = rpc.get_account(&address).await?;
-    let var = Var::try_from_bytes(&account.data)?;
-    Ok(*var)
-}
+// get_var removed - Schelling Point doesn't need entropy
 
 async fn get_round(rpc: &RpcClient, id: u64) -> Result<Round, anyhow::Error> {
     let round_pda = skill_api::state::round_pda(id);

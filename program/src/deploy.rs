@@ -1,7 +1,8 @@
-use entropy_api::state::Var;
 use skill_api::prelude::*;
-use solana_program::{keccak::hashv, log::sol_log, native_token::lamports_to_sol};
+use solana_program::{keccak::hashv, log::sol_log};
 use steel::*;
+
+const LAMPORTS_PER_SOL: u64 = 1_000_000_000;
 
 /// Deploys capital to prospect on a square.
 pub fn process_deploy(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResult {
@@ -14,11 +15,8 @@ pub fn process_deploy(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResul
 
     // Load accounts.
     let clock = Clock::get()?;
-    let (ore_accounts, entropy_accounts) = accounts.split_at(7);
-    sol_log(&format!("Ore accounts: {:?}", ore_accounts.len()).to_string());
-    sol_log(&format!("Entropy accounts: {:?}", entropy_accounts.len()).to_string());
     let [signer_info, authority_info, automation_info, board_info, miner_info, round_info, system_program] =
-        ore_accounts
+        accounts
     else {
         return Err(ProgramError::NotEnoughAccountKeys);
     };
@@ -27,40 +25,85 @@ pub fn process_deploy(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResul
     automation_info
         .is_writable()?
         .has_seeds(&[AUTOMATION, &authority_info.key.to_bytes()], &skill_api::ID)?;
+    // Allow deploy if: round is waiting to start (end_slot == MAX) OR within active round window
     let board = board_info
         .as_account_mut::<Board>(&skill_api::ID)?
-        .assert_mut(|b| clock.slot >= b.start_slot && clock.slot < b.end_slot)?;
-    let round = round_info
-        .as_account_mut::<Round>(&skill_api::ID)?
-        .assert_mut(|r| r.id == board.round_id)?;
+        .assert_mut(|b| b.end_slot == u64::MAX || (clock.slot >= b.start_slot && clock.slot < b.end_slot))?;
+
+    round_info.is_writable()?;
+
+    // Create Round account if it doesn't exist (first deploy after init)
+    // Also handle v0.5 migration where old rounds had smaller size (560 vs 568 bytes)
+    let expected_size = 8 + std::mem::size_of::<Round>();
+    let round = if round_info.data_is_empty() {
+        // create_program_account validates the PDA seeds
+        create_program_account::<Round>(
+            round_info,
+            system_program,
+            signer_info,
+            &skill_api::ID,
+            &[ROUND, &board.round_id.to_le_bytes()],
+        )?;
+        let round = round_info.as_account_mut::<Round>(&skill_api::ID)?;
+        round.id = board.round_id;
+        round.deployed = [0; 25];
+        round.slot_hash = [0; 32];
+        round.count = [0; 25];
+        round.expires_at = u64::MAX;
+        round.rent_payer = *signer_info.key;
+        round.motherlode = 0;
+        round.top_miner = Pubkey::default();
+        round.top_miner_reward = 0;
+        round.total_deployed = 0;
+        round.total_vaulted = 0;
+        round.total_winnings = 0;
+        round.winning_square = 0;
+        round._padding = [0; 7];
+        round
+    } else if round_info.data_len() < expected_size {
+        // v0.5 Migration: Old round account needs reallocation
+        // Transfer additional rent from signer BEFORE resizing (using system program)
+        let rent = solana_program::rent::Rent::get()?;
+        let new_minimum_balance = rent.minimum_balance(expected_size);
+        let current_balance = round_info.lamports();
+        if current_balance < new_minimum_balance {
+            let diff = new_minimum_balance - current_balance;
+            // Use collect() to transfer from signer to round via system program
+            round_info.collect(diff, signer_info)?;
+        }
+
+        // Now resize the account
+        round_info.resize(expected_size)?;
+
+        // Initialize new fields with defaults
+        let mut data = round_info.try_borrow_mut_data()?;
+        // winning_square at offset 560, _padding at 561-567
+        if data.len() >= 568 {
+            data[560] = 0; // winning_square
+            data[561..568].copy_from_slice(&[0; 7]); // _padding
+        }
+        drop(data);
+
+        round_info
+            .as_account_mut::<Round>(&skill_api::ID)?
+            .assert_mut(|r| r.id == board.round_id)?
+    } else {
+        round_info
+            .as_account_mut::<Round>(&skill_api::ID)?
+            .assert_mut(|r| r.id == board.round_id)?
+    };
+
     miner_info
         .is_writable()?
         .has_seeds(&[MINER, &authority_info.key.to_bytes()], &skill_api::ID)?;
     system_program.is_program(&system_program::ID)?;
 
     // Wait until first deploy to start round.
+    // Schelling Point: No entropy needed - winner determined by majority vote
     if board.end_slot == u64::MAX {
         board.start_slot = clock.slot;
-        board.end_slot = board.start_slot + 150;
+        board.end_slot = board.start_slot + 150; // ~60 seconds at 400ms/slot
         round.expires_at = board.end_slot + ONE_DAY_SLOTS;
-
-        // Bump var to the next value.
-        let [var_info, entropy_program] = entropy_accounts else {
-            return Err(ProgramError::NotEnoughAccountKeys);
-        };
-        // Validate var account - must be owned by entropy program with board as authority
-        var_info
-            .as_account::<Var>(&entropy_api::ID)?
-            .assert(|v| v.authority == *board_info.key)?;
-        entropy_program.is_program(&entropy_api::ID)?;
-
-        // Bump var to the next value.
-        invoke_signed(
-            &entropy_api::sdk::next(*board_info.key, *var_info.key, board.end_slot),
-            &[board_info.clone(), var_info.clone()],
-            &entropy_api::ID,
-            &[BOARD],
-        )?;
     }
 
     // Check if signer is the automation executor.
@@ -216,7 +259,7 @@ pub fn process_deploy(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResul
         &format!(
             "Round #{}: deploying {} SOL to {} squares",
             round.id,
-            lamports_to_sol(amount),
+            amount as f64 / LAMPORTS_PER_SOL as f64,
             total_squares,
         )
         .as_str(),

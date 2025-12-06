@@ -1,8 +1,9 @@
 use skill_api::prelude::*;
 use solana_program::log::sol_log;
-use solana_program::native_token::lamports_to_sol;
 use solana_program::pubkey;
 use steel::*;
+
+const LAMPORTS_PER_SOL: u64 = 1_000_000_000;
 
 const LIQ_MANAGER: Pubkey = pubkey!("DJqfQWB8tZE6fzqWa8okncDh7ciTuD8QQKp1ssNETWee");
 
@@ -51,7 +52,7 @@ pub fn process_liq(accounts: &[AccountInfo<'_>], _data: &[u8]) -> ProgramResult 
     let treasury_sol =
         treasury_sol_info.as_associated_token_account(treasury_info.key, &SOL_MINT)?;
     assert_eq!(treasury_sol.amount(), 0);
-    sol_log(&format!("💦 Sent {} SOL to liq manager", lamports_to_sol(liq_amount)).as_str());
+    sol_log(&format!("💦 Sent {} SOL to liq manager", liq_amount as f64 / LAMPORTS_PER_SOL as f64).as_str());
 
     // Emit event.
     program_log(

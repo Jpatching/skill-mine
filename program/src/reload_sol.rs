@@ -1,6 +1,8 @@
 use skill_api::prelude::*;
-use solana_program::{log::sol_log, native_token::lamports_to_sol};
+use solana_program::log::sol_log;
 use steel::*;
+
+const LAMPORTS_PER_SOL: u64 = 1_000_000_000;
 
 /// Claims a block reward.
 pub fn process_reload_sol(accounts: &[AccountInfo<'_>], _data: &[u8]) -> ProgramResult {
@@ -29,7 +31,7 @@ pub fn process_reload_sol(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
     miner_info.send(amount, automation_info);
 
     // Log
-    sol_log(&format!("Reloading {} SOL", lamports_to_sol(amount)).as_str());
+    sol_log(&format!("Reloading {} SOL", amount as f64 / LAMPORTS_PER_SOL as f64).as_str());
 
     Ok(())
 }

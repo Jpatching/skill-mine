@@ -1,6 +1,8 @@
 use skill_api::prelude::*;
-use solana_program::{log::sol_log, native_token::lamports_to_sol};
+use solana_program::log::sol_log;
 use steel::*;
+
+const LAMPORTS_PER_SOL: u64 = 1_000_000_000;
 
 /// Claims a block reward.
 pub fn process_claim_sol(accounts: &[AccountInfo<'_>], _data: &[u8]) -> ProgramResult {
@@ -18,7 +20,7 @@ pub fn process_claim_sol(accounts: &[AccountInfo<'_>], _data: &[u8]) -> ProgramR
     // Normalize amount.
     let amount = miner.claim_sol(&clock);
 
-    sol_log(&format!("Claiming {} SOL", lamports_to_sol(amount)).as_str());
+    sol_log(&format!("Claiming {} SOL", amount as f64 / LAMPORTS_PER_SOL as f64).as_str());
 
     // Transfer reward to recipient.
     miner_info.send(amount, signer_info);

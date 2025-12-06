@@ -53,23 +53,29 @@ Each instruction has its own module:
 - **Staking**: `deposit`, `withdraw`, `claim_yield`
 - **Admin**: `bury`, `buyback`, `wrap`, `set_admin`, `set_fee_collector`
 
-### Game Mechanics
+### Game Mechanics (Schelling Point v0.5)
 1. **Round System**: 150-slot rounds (~1 minute)
 2. **Board**: 25 squares where players deploy SOL
-3. **RNG**: Entropy protocol determines winning square at round end
-4. **Rewards**: Winners share losing SOL + token emissions
+3. **Winner Selection**: Schelling Point (majority vote) - square with most SOL wins
+4. **RNG**: Solana slot_hash for split/motherlode randomness (no external entropy needed)
+5. **Rewards**: Winners share losing SOL + token emissions
+6. **Self-Cranking**: Players call reset+deploy - no external infrastructure needed
 
 ### Key Dependencies
 - **steel** - Solana program framework
-- **entropy-api** - External randomness source
 - **spl-token/spl-token-2022** - Token program interactions
+- ~~entropy-api~~ - Removed in v0.5 (Schelling Point design)
 
 ## CLI Usage
 
 ```bash
 # Available commands (set via COMMAND env var):
-# init, board, config, treasury, miner, round, stake, deploy, claim, reset, checkpoint, automations
+# init, board, config, treasury, miner, round, stake, deploy, play, claim, reset, checkpoint, automations
 KEYPAIR=/path/to/keypair.json RPC=https://rpc-url COMMAND=board cargo run -p skill-cli
+
+# PLAY command (recommended) - automatically handles round transitions
+KEYPAIR=~/.config/solana/id.json RPC=https://api.devnet.solana.com \
+  COMMAND=play SQUARE=12 AMOUNT=100000 cargo run -p skill-cli
 ```
 
 ### Initialization (First-Time Setup)
@@ -127,7 +133,7 @@ This creates:
 - `MINT_ADDRESS` is now derived from PDA (seed: `MINT`) - fully independent from ORE
 - `ADMIN_ADDRESS` in `api/src/consts.rs` controls who can call `initialize` and admin functions
 - The app/ directory has its own complex dependency tree and is not part of the main workspace
-- Internal naming still uses `OreInstruction`, `OreAccount` enums - will be renamed in v0.2
+- Internal naming still uses `OreInstruction`, `OreAccount` enums - will be renamed in v1.0
 
 ### Key Constants (api/src/consts.rs)
 - `ADMIN_ADDRESS` - Only this keypair can initialize and call admin functions
@@ -135,9 +141,125 @@ This creates:
 - `TOKEN_DECIMALS` - 11 (100 billion units per SKILL token)
 - `MAX_SUPPLY` - 5,000,000 SKILL tokens
 
-## Skill System (Planned for v0.2)
+## Skill System (v0.2 - Implemented)
 
-The hybrid skill system will add:
+The hybrid skill system adds:
 - `SubmitPrediction` instruction for guessing winning squares
-- Skill score tracking in `Miner` state
+- Skill score tracking in `Miner` state (`skill_score`, `streak`, `challenge_count`, `challenge_wins`)
 - Skill multipliers applied during `checkpoint`
+- Multiplier formula: `base(1.0x) + log10(score)*5% + streak*2%`, capped at 1.5x
+
+### Skill CLI Commands
+
+```bash
+# Submit a prediction
+KEYPAIR=~/.config/solana/id.json RPC=https://api.devnet.solana.com COMMAND=predict SQUARE=12 cargo run -p skill-cli
+
+# View skill stats
+KEYPAIR=~/.config/solana/id.json RPC=https://api.devnet.solana.com COMMAND=skill cargo run -p skill-cli
+```
+
+## App (v0.3 - Dioxus Full-Stack)
+
+The `app/` directory contains a Dioxus web+desktop application. It has its own workspace and dependencies.
+
+### App Structure
+```
+app/
+├── Cargo.toml           # Dioxus + web dependencies
+├── Dioxus.toml          # Framework configuration
+├── tailwind.config.js   # Tailwind CSS
+├── input.css            # Base styles
+├── public/              # Static assets
+└── src/
+    ├── main.rs          # Entry point with providers
+    ├── route.rs         # Page routing
+    ├── components/      # UI components (Board, SkillStats, WalletButton)
+    ├── hooks/           # State management (use_board, use_miner, use_leaderboard)
+    └── pages/           # Route pages (Home, Play, Leaderboard, Stats)
+```
+
+### Running the App
+
+```bash
+# Install Dioxus CLI
+cargo install dioxus-cli
+
+# Development (web)
+cd app && dx serve
+
+# Development (desktop)
+cd app && dx serve --platform desktop
+
+# Production build
+dx build --release
+```
+
+### App Features
+- **Prediction UI**: 5x5 interactive board for selecting predictions
+- **Skill Stats**: Real-time display of score, streak, multiplier
+- **Leaderboard**: Top miners by skill score (via Helius API)
+- **Wallet Integration**: Phantom wallet support
+
+## Schelling Point Design (v0.5 - Implemented)
+
+Major architecture change from entropy-based RNG to coordination game:
+
+### Winner Determination
+```
+Winner = argmax(deployed)  // Square with most SOL wins
+Tie-breaker: lower index wins (deterministic)
+```
+
+### Key Changes from ORE
+| Aspect | ORE | SKILL v0.5 |
+|--------|-----|------------|
+| Winner | Random (Entropy protocol) | Majority vote (Schelling Point) |
+| External deps | Entropy API service | None |
+| Game theory | Gambling | Coordination |
+| Infrastructure | Needs crank bots | Players are the crank |
+
+### Round State Changes
+```rust
+pub struct Round {
+    // ... existing fields ...
+    pub winning_square: u8,    // NEW: Stores winner directly (0-24)
+    pub _padding: [u8; 7],     // Alignment padding
+}
+```
+
+### Slot Hash RNG
+Split reward and motherlode use Solana's slot_hash for unpredictability:
+```rust
+// Sample from SlotHashes sysvar at round end
+round.slot_hash = slot_hashes.get(&board.end_slot);
+let r = round.rng();  // XOR of slot_hash bytes
+```
+
+### Play Command (Self-Cranking)
+Players automatically reset rounds when needed:
+```bash
+# Automatically calls reset + deploy if round ended
+COMMAND=play SQUARE=12 AMOUNT=100000 cargo run -p skill-cli
+```
+
+The `play()` SDK function bundles reset + deploy in one transaction:
+- If round ended → reset (finalizes winner) + deploy (joins new round)
+- If round active → just deploy
+- No external crank/bot infrastructure needed
+
+### Payout Flow
+```
+Total Deployed
+├── 1% Admin Fee → Fee Collector
+├── Winners' Original SOL → Back to Winners
+└── Losers' SOL (Winnings Pool)
+    ├── 1% Admin Fee → Fee Collector
+    ├── 10% Vault → Treasury.balance
+    └── 89% Winnings → Split among winners
+
+Token Minting:
+• 1 SKILL/round → Winner(s)
+• 0.2 SKILL/round → Motherlode pool
+• Max supply: 5,000,000 SKILL
+```

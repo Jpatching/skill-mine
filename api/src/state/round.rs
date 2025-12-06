@@ -14,7 +14,8 @@ pub struct Round {
     /// The amount of SOL deployed in each square.
     pub deployed: [u64; 25],
 
-    /// The hash of the end slot, provided by solana, used for random number generation.
+    /// The hash of the end slot from Solana, used for RNG (split, motherlode, top_miner).
+    /// Sampled from SlotHashes sysvar at round end for unpredictability.
     pub slot_hash: [u8; 32],
 
     /// The count of miners on each square.
@@ -43,6 +44,13 @@ pub struct Round {
 
     /// The total amount of SOL won by miners for the round.
     pub total_winnings: u64,
+
+    /// The winning square index (0-24) determined by Schelling Point (argmax).
+    /// Stored directly to avoid square 0 bug with slot_hash == [0;32].
+    pub winning_square: u8,
+
+    /// Padding for alignment (7 bytes to align to 8-byte boundary).
+    pub _padding: [u8; 7],
 }
 
 impl Round {
@@ -50,8 +58,22 @@ impl Round {
         round_pda(self.id)
     }
 
+    /// Get the winning square directly (Schelling Point design).
+    /// This is the square with the most SOL deployed (argmax).
+    pub fn get_winning_square(&self) -> usize {
+        self.winning_square as usize
+    }
+
+    /// Check if round result is valid (has been finalized via reset).
+    pub fn is_finalized(&self) -> bool {
+        // A finalized round has a non-zero slot_hash (sampled from Solana)
+        self.slot_hash != [0; 32]
+    }
+
+    /// Get RNG value from slot_hash for split/motherlode/top_miner selection.
+    /// Returns None if round hasn't been finalized yet.
     pub fn rng(&self) -> Option<u64> {
-        if self.slot_hash == [0; 32] || self.slot_hash == [u8::MAX; 32] {
+        if !self.is_finalized() {
             return None;
         }
         let r1 = u64::from_le_bytes(self.slot_hash[0..8].try_into().unwrap());
@@ -62,8 +84,10 @@ impl Round {
         Some(r)
     }
 
-    pub fn winning_square(&self, rng: u64) -> usize {
-        (rng % 25) as usize
+    /// Legacy method for backwards compatibility - use get_winning_square() instead.
+    #[deprecated(note = "Use get_winning_square() for Schelling Point design")]
+    pub fn winning_square(&self, _rng: u64) -> usize {
+        self.winning_square as usize
     }
 
     pub fn top_miner_sample(&self, rng: u64, winning_square: usize) -> u64 {

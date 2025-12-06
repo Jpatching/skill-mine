@@ -1,9 +1,9 @@
 use skill_api::prelude::*;
-use solana_program::{log::sol_log, native_token::lamports_to_sol, rent::Rent};
+use solana_program::{log::sol_log, rent::Rent};
 use spl_token::amount_to_ui_amount;
 use steel::*;
 
-// TODO Integrate admin fee
+const LAMPORTS_PER_SOL: u64 = 1_000_000_000;
 
 /// Checkpoints a miner's rewards.
 pub fn process_checkpoint(accounts: &[AccountInfo<'_>], _data: &[u8]) -> ProgramResult {
@@ -35,10 +35,12 @@ pub fn process_checkpoint(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
     }
 
     // If round is current round, or the miner round ID does not match the provided round, return.
-    let round = round_info.as_account_mut::<Round>(&skill_api::ID)?; // Round has been closed.
+    let round = round_info.as_account_mut::<Round>(&skill_api::ID)?;
     sol_log(&format!("Round ID: {}", round.id).as_str());
-    if round.id == board.round_id || round.id != miner.round_id || round.slot_hash == [0; 32] {
-        sol_log(&format!("Round not valid").as_str());
+
+    // Check if round is valid and finalized (has slot_hash from reset)
+    if round.id == board.round_id || round.id != miner.round_id || !round.is_finalized() {
+        sol_log(&format!("Round not valid or not finalized").as_str());
         return Ok(());
     }
 
@@ -63,10 +65,11 @@ pub fn process_checkpoint(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
     let mut rewards_ore = 0;
     let mut winning_square_for_skill: Option<u8> = None;
 
-    // Get the RNG.
+    // Get the winning square (stored directly by Schelling Point logic)
+    // and RNG for split/motherlode/top_miner selection
     if let Some(r) = round.rng() {
-        // Get the winning square.
-        let winning_square = round.winning_square(r) as usize;
+        // Get the winning square directly (Schelling Point - stored in round)
+        let winning_square = round.get_winning_square();
         winning_square_for_skill = Some(winning_square as u8);
 
         // If the miner deployed to the winning square, calculate rewards.
@@ -83,7 +86,7 @@ pub fn process_checkpoint(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
             rewards_sol = original_deployment - admin_fee;
             rewards_sol += ((round.total_winnings as u128 * miner.deployed[winning_square] as u128)
                 / round.deployed[winning_square] as u128) as u64;
-            sol_log(&format!("Base rewards: {} SOL", lamports_to_sol(rewards_sol)).as_str());
+            sol_log(&format!("Base rewards: {} SOL", rewards_sol as f64 / LAMPORTS_PER_SOL as f64).as_str());
 
             // Calculate ORE rewards.
             if round.top_miner == SPLIT_ADDRESS {
@@ -142,7 +145,7 @@ pub fn process_checkpoint(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
 
         // Round has no slot hash, refund all SOL.
         let refund_amount = miner.deployed.iter().sum::<u64>();
-        sol_log(&format!("Refunding {} SOL", lamports_to_sol(refund_amount)).as_str());
+        sol_log(&format!("Refunding {} SOL", refund_amount as f64 / LAMPORTS_PER_SOL as f64).as_str());
         rewards_sol = refund_amount;
     }
 

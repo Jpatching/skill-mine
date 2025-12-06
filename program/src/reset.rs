@@ -1,19 +1,14 @@
-use entropy_api::state::Var;
 use skill_api::prelude::*;
-use solana_program::{keccak, log::sol_log};
+use solana_program::log::sol_log;
 use steel::*;
 
-// TODO Integrate admin fee
-
 /// Pays out the winners and block reward.
+/// Schelling Point: Winner = square with most SOL deployed (majority coordination).
 pub fn process_reset(accounts: &[AccountInfo<'_>], _data: &[u8]) -> ProgramResult {
     // Load accounts.
     let clock = Clock::get()?;
-    let (ore_accounts, entropy_accounts) = accounts.split_at(14);
-    sol_log(&format!("Ore accounts: {:?}", ore_accounts.len()).to_string());
-    sol_log(&format!("Entropy accounts: {:?}", entropy_accounts.len()).to_string());
     let [signer_info, board_info, config_info, fee_collector_info, mint_info, round_info, round_next_info, _top_miner_info, treasury_info, treasury_tokens_info, system_program, token_program, ore_program, slot_hashes_sysvar] =
-        ore_accounts
+        accounts
     else {
         return Err(ProgramError::NotEnoughAccountKeys);
     };
@@ -38,6 +33,7 @@ pub fn process_reset(accounts: &[AccountInfo<'_>], _data: &[u8]) -> ProgramResul
     system_program.is_program(&system_program::ID)?;
     token_program.is_program(&spl_token::ID)?;
     ore_program.is_program(&skill_api::ID)?;
+    // Keep slot_hashes for backwards compatibility (SDK still passes it)
     slot_hashes_sysvar.is_sysvar(&sysvar::slot_hashes::ID)?;
 
     // Open next round account.
@@ -61,71 +57,51 @@ pub fn process_reset(accounts: &[AccountInfo<'_>], _data: &[u8]) -> ProgramResul
     round_next.total_deployed = 0;
     round_next.total_vaulted = 0;
     round_next.total_winnings = 0;
+    round_next.winning_square = 0;
+    round_next._padding = [0; 7];
 
-    // Sample random variable
-    let [var_info, entropy_program] = entropy_accounts else {
-        return Err(ProgramError::NotEnoughAccountKeys);
-    };
-    let var = var_info
-        .has_address(&config.var_address)?
-        .as_account::<Var>(&entropy_api::ID)?
-        .assert(|v| v.authority == *board_info.key)?
-        .assert(|v| v.slot_hash != [0; 32])?
-        .assert(|v| v.seed != [0; 32])?
-        .assert(|v| v.value != [0; 32])?;
-    entropy_program.is_program(&entropy_api::ID)?;
+    // ============ SCHELLING POINT: Majority Voting ============
+    // Winner = square with most SOL deployed (coordination game)
+    // Tie-breaker: lower index wins (deterministic)
+    let (winning_square, max_deployed) = round
+        .deployed
+        .iter()
+        .enumerate()
+        .max_by(|(i1, v1), (i2, v2)| {
+            // Primary: most SOL deployed
+            // Secondary: lower index (for deterministic tie-breaking)
+            v1.cmp(v2).then_with(|| i2.cmp(i1))
+        })
+        .map(|(i, &v)| (i, v))
+        .unwrap_or((0, 0));
 
-    // Print the seed and slot hash.
-    let seed = keccak::Hash::new_from_array(var.seed);
-    let slot_hash = keccak::Hash::new_from_array(var.slot_hash);
-    sol_log(&format!("var slothash: {:?}", slot_hash).to_string());
-    sol_log(&format!("var seed: {:?}", seed).to_string());
+    sol_log(&format!(
+        "Schelling Point: Square #{} wins with {} lamports",
+        winning_square, max_deployed
+    ));
 
-    // Read the finalized value from the var.
-    let value = keccak::Hash::new_from_array(var.value);
-    sol_log(&format!("var value: {:?}", value).to_string());
-    round.slot_hash = var.value;
+    // Store winning square directly (fixes square 0 bug)
+    round.winning_square = winning_square as u8;
+    round._padding = [0; 7];
 
-    // Exit early if no slot hash was found.
-    let Some(r) = round.rng() else {
-        // Slot hash could not be found, refund all SOL.
-        round.total_vaulted = 0;
-        round.total_winnings = 0;
-        round.total_deployed = 0;
+    // Sample slot_hash from SlotHashes sysvar for unpredictable RNG (split, motherlode, top_miner)
+    // SlotHashes layout: first 8 bytes = length, then (slot: u64, hash: [u8;32]) entries
+    // We extract raw bytes from the sysvar and hash them with other unpredictable data
+    let slot_hashes_data = slot_hashes_sysvar.data.borrow();
+    round.slot_hash = solana_program::keccak::hashv(&[
+        &slot_hashes_data[..slot_hashes_data.len().min(256)], // First 256 bytes of slot hashes
+        &board.end_slot.to_le_bytes(),
+        &round.total_deployed.to_le_bytes(),
+        &clock.slot.to_le_bytes(),
+        &round.deployed[winning_square].to_le_bytes(),
+    ])
+    .to_bytes();
 
-        // Emit event.
-        program_log(
-            &[board_info.clone(), ore_program.clone()],
-            ResetEvent {
-                disc: 0,
-                round_id: round.id,
-                start_slot: board.start_slot,
-                end_slot: board.end_slot,
-                winning_square: u64::MAX,
-                top_miner: Pubkey::default(),
-                num_winners: 0,
-                motherlode: 0,
-                total_deployed: round.total_deployed,
-                total_vaulted: round.total_vaulted,
-                total_winnings: round.total_winnings,
-                total_minted: 0,
-                ts: clock.unix_timestamp,
-            }
-            .to_bytes(),
-        )?;
+    // Get RNG from slot_hash for split/motherlode decisions
+    let r = round.rng().unwrap_or(0);
 
-        // Update board for next round.
-        board.round_id += 1;
-        board.start_slot = clock.slot + 1;
-        board.end_slot = u64::MAX;
-        return Ok(());
-    };
-
-    // Caculate admin fees.
+    // Calculate admin fees.
     let total_admin_fee = round.total_deployed / 100;
-
-    // Get the winning square.
-    let winning_square = round.winning_square(r);
 
     // If no one deployed on the winning square, vault all deployed.
     if round.deployed[winning_square] == 0 {

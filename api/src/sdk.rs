@@ -96,6 +96,7 @@ pub fn claim_ore(signer: Pubkey) -> Instruction {
 
 // let [signer_info, authority_info, automation_info, board_info, miner_info, round_info, system_program] =
 
+/// Schelling Point: Deploy SOL to vote for squares (no entropy needed)
 pub fn deploy(
     signer: Pubkey,
     authority: Pubkey,
@@ -107,7 +108,6 @@ pub fn deploy(
     let board_address = board_pda().0;
     let miner_address = miner_pda(authority).0;
     let round_address = round_pda(round_id).0;
-    let entropy_var_address = entropy_api::state::var_pda(board_address, 0).0;
 
     // Convert array of 25 booleans into a 32-bit mask where each bit represents whether
     // that square index is selected (1) or not (0)
@@ -128,9 +128,6 @@ pub fn deploy(
             AccountMeta::new(miner_address, false),
             AccountMeta::new(round_address, false),
             AccountMeta::new_readonly(system_program::ID, false),
-            // Entropy accounts.
-            AccountMeta::new(entropy_var_address, false),
-            AccountMeta::new_readonly(entropy_api::ID, false),
         ],
         data: Deploy {
             amount: amount.to_le_bytes(),
@@ -138,6 +135,66 @@ pub fn deploy(
         }
         .to_bytes(),
     }
+}
+
+/// Build instructions to play a round. This is the main entry point for players.
+///
+/// Automatically handles round transitions:
+/// - If the current round has ended, prepends a reset instruction
+/// - Then deploys to the target round
+///
+/// This allows players to be the "crank" - no external infrastructure needed.
+///
+/// # Arguments
+/// * `signer` - The player's wallet
+/// * `amount` - Amount of lamports to deploy per square
+/// * `squares` - Which squares to deploy to (bitmask as bool array)
+/// * `fee_collector` - Address to receive admin fees (from Config)
+/// * `current_round_id` - Current round from Board
+/// * `round_ended` - Whether current round has ended (slot >= end_slot + intermission)
+pub fn play(
+    signer: Pubkey,
+    amount: u64,
+    squares: [bool; 25],
+    fee_collector: Pubkey,
+    current_round_id: u64,
+    round_ended: bool,
+) -> Vec<Instruction> {
+    let mut instructions = vec![];
+
+    if round_ended {
+        // Prepend reset instruction to finalize current round and create next
+        instructions.push(reset(
+            signer,
+            fee_collector,
+            current_round_id,
+            Pubkey::default(), // top_miner placeholder
+        ));
+
+        // Checkpoint the previous round to claim rewards before deploying
+        // This is required - miners must checkpoint before joining new round
+        instructions.push(checkpoint(signer, signer, current_round_id));
+    }
+
+    // Deploy to the appropriate round
+    let target_round = if round_ended {
+        current_round_id + 1
+    } else {
+        current_round_id
+    };
+
+    instructions.push(deploy(signer, signer, amount, target_round, squares));
+
+    instructions
+}
+
+/// Helper to create a bitmask for a single square
+pub fn single_square(index: u8) -> [bool; 25] {
+    let mut squares = [false; 25];
+    if index < 25 {
+        squares[index as usize] = true;
+    }
+    squares
 }
 
 // let [pool, user_source_token, user_destination_token, a_vault, b_vault, a_token_vault, b_token_vault, a_vault_lp_mint, b_vault_lp_mint, a_vault_lp, b_vault_lp, protocol_token_fee, user_key, vault_program, token_program] =
@@ -249,6 +306,7 @@ pub fn wrap(signer: Pubkey) -> Instruction {
 
 // let [signer_info, board_info, config_info, fee_collector_info, mint_info, round_info, round_next_info, top_miner_info, treasury_info, treasury_tokens_info, system_program, token_program, ore_program, slot_hashes_sysvar] =
 
+/// Schelling Point: Reset determines winner by majority vote (no entropy needed)
 pub fn reset(
     signer: Pubkey,
     fee_collector: Pubkey,
@@ -263,7 +321,6 @@ pub fn reset(
     let top_miner_address = miner_pda(top_miner).0;
     let treasury_address = TREASURY_ADDRESS;
     let treasury_tokens_address = treasury_tokens_address();
-    let entropy_var_address = entropy_api::state::var_pda(board_address, 0).0;
     Instruction {
         program_id: crate::ID,
         accounts: vec![
@@ -281,9 +338,6 @@ pub fn reset(
             AccountMeta::new_readonly(spl_token::ID, false),
             AccountMeta::new_readonly(crate::ID, false),
             AccountMeta::new_readonly(sysvar::slot_hashes::ID, false),
-            // Entropy accounts.
-            AccountMeta::new(entropy_var_address, false),
-            AccountMeta::new_readonly(entropy_api::ID, false),
         ],
         data: Reset {}.to_bytes(),
     }

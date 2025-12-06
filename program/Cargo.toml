@@ -18,7 +18,6 @@ name = "skill"
 default = []
 
 [dependencies]
-bincode.workspace = true
 entropy-api.workspace = true
 skill-api.workspace = true
 solana-nostd-keccak.workspace = true
