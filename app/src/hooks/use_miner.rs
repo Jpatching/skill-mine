@@ -1,41 +1,48 @@
 use dioxus::prelude::*;
+use std::cell::Cell;
+use std::rc::Rc;
 use crate::{MinerState, WalletState, RPC_URL};
 use super::rpc::{fetch_account, miner_pda};
 
 pub fn use_miner() -> Signal<MinerState> {
-    let mut miner = use_context::<Signal<MinerState>>();
+    let miner = use_context::<Signal<MinerState>>();
     let wallet = use_context::<Signal<WalletState>>();
 
-    // Extract wallet pubkey as a memo to avoid borrow conflicts
-    let wallet_pubkey = use_memo(move || wallet.read().pubkey.clone());
+    // Track if polling has started to prevent multiple loops
+    let polling_started = use_hook(|| Rc::new(Cell::new(false)));
 
-    // Poll miner data periodically when wallet is connected
-    use_future(move || {
-        async move {
-            loop {
-                let pubkey = wallet_pubkey();
-                if let Some(authority) = pubkey {
-                    match fetch_miner_data(&authority).await {
-                        Ok(data) => {
-                            let mut miner_mut = miner.write();
-                            miner_mut.deployed = data.deployed;
-                            miner_mut.skill_score = data.skill_score;
-                            miner_mut.streak = data.streak;
-                            miner_mut.prediction = data.prediction;
-                            miner_mut.challenge_count = data.challenge_count;
-                            miner_mut.challenge_wins = data.challenge_wins;
-                            miner_mut.rewards_sol = data.rewards_sol;
-                            miner_mut.rewards_ore = data.rewards_ore;
-                            miner_mut.loading = false;
-                        }
-                        Err(e) => {
-                            tracing::error!("Failed to fetch miner: {}", e);
+    // Start polling only once
+    use_effect(move || {
+        if !polling_started.get() {
+            polling_started.set(true);
+            let mut miner = miner;
+
+            spawn(async move {
+                loop {
+                    let pubkey = wallet.read().pubkey.clone();
+                    if let Some(authority) = pubkey {
+                        match fetch_miner_data(&authority).await {
+                            Ok(data) => {
+                                let mut miner_mut = miner.write();
+                                miner_mut.deployed = data.deployed;
+                                miner_mut.skill_score = data.skill_score;
+                                miner_mut.streak = data.streak;
+                                miner_mut.prediction = data.prediction;
+                                miner_mut.challenge_count = data.challenge_count;
+                                miner_mut.challenge_wins = data.challenge_wins;
+                                miner_mut.rewards_sol = data.rewards_sol;
+                                miner_mut.rewards_ore = data.rewards_ore;
+                                miner_mut.loading = false;
+                            }
+                            Err(e) => {
+                                tracing::error!("Failed to fetch miner: {}", e);
+                            }
                         }
                     }
+                    // Poll every 4 seconds (offset from board poll)
+                    gloo_timers::future::TimeoutFuture::new(4000).await;
                 }
-                // Poll every 2 seconds
-                gloo_timers::future::TimeoutFuture::new(2000).await;
-            }
+            });
         }
     });
 

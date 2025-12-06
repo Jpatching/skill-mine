@@ -1,34 +1,64 @@
 use dioxus::prelude::*;
+use std::cell::Cell;
+use std::rc::Rc;
 use crate::{BoardState, RoundPhase, RPC_URL};
 use super::rpc::{fetch_account, fetch_slot, board_pda, round_pda};
 
 pub fn use_board() -> Signal<BoardState> {
-    let mut board = use_context::<Signal<BoardState>>();
+    let board = use_context::<Signal<BoardState>>();
 
-    // Use future for polling - automatically cancelled on component unmount
-    use_future(move || async move {
-        loop {
-            fetch_and_update_board(board).await;
+    // Track if polling has started to prevent multiple loops
+    let polling_started = use_hook(|| Rc::new(Cell::new(false)));
 
-            // Adaptive polling based on round state
-            let poll_interval = {
-                let state = board.read();
-                let slots_remaining = state.end_slot.saturating_sub(state.current_slot);
-                let seconds_remaining = (slots_remaining as f64 * 0.4) as u64;
+    // Start polling only once
+    use_effect(move || {
+        if !polling_started.get() {
+            polling_started.set(true);
 
-                match state.phase {
-                    RoundPhase::Deploying if seconds_remaining < 15 => 500,  // Fast poll near end
-                    RoundPhase::Deploying => 1000,                           // Normal active poll
-                    RoundPhase::Revealing => 500,                            // Fast poll during reveal
-                    RoundPhase::Ended => 3000,                               // Slow poll when ended
+            spawn(async move {
+                loop {
+                    // Fetch board data
+                    if let Err(e) = fetch_and_update_board_safe(board).await {
+                        tracing::error!("Board fetch error: {}", e);
+                    }
+
+                    // Adaptive polling interval
+                    let poll_interval = {
+                        let state = board.read();
+                        let slots_remaining = state.end_slot.saturating_sub(state.current_slot);
+                        let seconds_remaining = (slots_remaining as f64 * 0.4) as u64;
+
+                        match state.phase {
+                            RoundPhase::Deploying if seconds_remaining < 15 => 1500,
+                            RoundPhase::Deploying => 3000,
+                            RoundPhase::Revealing => 2000,
+                            RoundPhase::Ended => 5000,
+                        }
+                    };
+
+                    gloo_timers::future::TimeoutFuture::new(poll_interval).await;
                 }
-            };
-
-            gloo_timers::future::TimeoutFuture::new(poll_interval).await;
+            });
         }
     });
 
     board
+}
+
+async fn fetch_and_update_board_safe(mut board: Signal<BoardState>) -> Result<(), String> {
+    let data = fetch_board_and_round().await?;
+    let mut board_mut = board.write();
+    board_mut.round_id = data.round_id;
+    board_mut.start_slot = data.start_slot;
+    board_mut.end_slot = data.end_slot;
+    board_mut.deployed = data.deployed;
+    board_mut.count = data.count;
+    board_mut.total_deployed = data.total_deployed;
+    board_mut.current_slot = data.current_slot;
+    board_mut.winning_square = data.winning_square;
+    board_mut.phase = data.phase;
+    board_mut.loading = false;
+    Ok(())
 }
 
 async fn fetch_and_update_board(mut board: Signal<BoardState>) {
