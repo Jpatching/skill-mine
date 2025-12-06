@@ -53,9 +53,10 @@ pub struct WalletState {
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub enum RoundPhase {
     #[default]
-    Deploying,  // Round active, accepting deployments
-    Revealing,  // Round ended, waiting for entropy/reset
-    Ended,      // Winner determined, awaiting new round
+    Deploying,  // Deploy phase: users deploy SOL to squares (visible)
+    Committing, // Commit phase: submit choice hash - deployment visible but choice hidden
+    Revealing,  // Reveal phase: reveal choices to compete
+    Ended,      // Winner determined, awaiting next round
 }
 
 #[derive(Clone, Debug)]
@@ -69,6 +70,9 @@ pub struct BoardState {
     pub current_slot: u64,          // Current slot for timer calculation
     pub winning_square: Option<u8>, // Set when round ends
     pub phase: RoundPhase,          // Current round phase
+    pub bonus_squares: [u8; 3],     // v0.6: Bonus squares with 2x multiplier
+    pub commit_start_slot: u64,     // v0.6: Start of commit phase
+    pub reveal_start_slot: u64,     // v0.6: Start of reveal phase
     pub loading: bool,
 }
 
@@ -84,6 +88,9 @@ impl Default for BoardState {
             current_slot: 0,
             winning_square: None,
             phase: RoundPhase::Deploying,
+            bonus_squares: [0, 0, 0],
+            commit_start_slot: 0,
+            reveal_start_slot: 0,
             loading: true,
         }
     }

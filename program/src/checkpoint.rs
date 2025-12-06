@@ -152,19 +152,38 @@ pub fn process_checkpoint(accounts: &[AccountInfo<'_>], _data: &[u8]) -> Program
     // Checkpoint rewards.
     miner.update_rewards(treasury);
 
-    // v0.2: Evaluate skill prediction and apply multiplier
+    // v0.6: Enhanced multiplier system combining skill, contrarian, and bonus squares
     if let Some(winning_square) = winning_square_for_skill {
-        let skill_multiplier = miner.evaluate_prediction(winning_square, round.id);
-        if skill_multiplier > 100 && rewards_ore > 0 {
-            let boosted_ore = (rewards_ore as u128 * skill_multiplier as u128 / 100) as u64;
+        // First, evaluate prediction to update skill score/streak
+        let _skill_mult = miner.evaluate_prediction(winning_square, round.id);
+
+        // Calculate total multiplier (skill * contrarian * bonus_square) / 10000
+        // Returns value where 100 = 1.0x, 200 = 2.0x, etc.
+        let total_multiplier = miner.calculate_total_multiplier(winning_square, round);
+
+        if total_multiplier > 100 && rewards_ore > 0 {
+            let boosted_ore = (rewards_ore as u128 * total_multiplier as u128 / 100) as u64;
             let bonus = boosted_ore - rewards_ore;
+
+            // Log breakdown of multiplier components
+            let skill_mult = miner.calculate_skill_multiplier();
+            let contrarian_mult = round.calculate_contrarian_bonus(winning_square);
+            let bonus_sq_mult = if round.is_bonus_square(winning_square) { 200 } else { 100 };
+
             sol_log(&format!(
-                "Skill bonus: {}x multiplier, +{} ORE",
-                skill_multiplier as f64 / 100.0,
+                "v0.6 Multiplier: skill({}%) * contrarian({}%) * bonus_sq({}%) = {}%, +{} ORE",
+                skill_mult,
+                contrarian_mult,
+                bonus_sq_mult,
+                total_multiplier,
                 amount_to_ui_amount(bonus, TOKEN_DECIMALS)
             ).as_str());
+
             rewards_ore = boosted_ore;
         }
+
+        // Clear commitment state for next round
+        miner.clear_commitment();
     }
 
     // Checkpoint miner.

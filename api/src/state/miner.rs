@@ -75,6 +75,23 @@ pub struct Miner {
 
     /// Total number of correct predictions.
     pub challenge_wins: u64,
+
+    // ============ v0.6 Commit-Reveal Fields ============
+
+    /// Hash commitment: keccak256(square || salt || authority).
+    pub commitment: [u8; 32],
+
+    /// Salt used in commitment (revealed later).
+    pub commit_salt: [u8; 16],
+
+    /// Round ID for current commitment.
+    pub commit_round_id: u64,
+
+    /// Revealed square (0-24, or 255 if not revealed yet).
+    pub revealed_square: u8,
+
+    /// Padding for alignment.
+    pub _padding3: [u8; 7],
 }
 
 impl Miner {
@@ -197,6 +214,82 @@ impl Miner {
 
         // Return multiplier to apply to rewards
         self.calculate_skill_multiplier()
+    }
+
+    // ============ v0.6 Commit-Reveal Methods ============
+
+    /// No reveal constant (255 means not revealed yet).
+    pub const NO_REVEAL: u8 = 255;
+
+    /// Maximum contrarian bonus (148 = 1.48x).
+    pub const MAX_CONTRARIAN_BONUS: u64 = 148;
+
+    /// Submit a commitment hash for this round.
+    pub fn submit_commitment(&mut self, commitment: [u8; 32], round_id: u64) {
+        self.commitment = commitment;
+        self.commit_round_id = round_id;
+        self.revealed_square = Self::NO_REVEAL;
+    }
+
+    /// Reveal the committed choice.
+    pub fn reveal_choice(&mut self, square: u8, salt: [u8; 16]) {
+        self.revealed_square = square;
+        self.commit_salt = salt;
+    }
+
+    /// Check if miner has a commitment for this round.
+    pub fn has_commitment_for_round(&self, round_id: u64) -> bool {
+        self.commit_round_id == round_id && self.commitment != [0u8; 32]
+    }
+
+    /// Check if miner has revealed for this round.
+    pub fn has_revealed_for_round(&self, round_id: u64) -> bool {
+        self.commit_round_id == round_id && self.revealed_square != Self::NO_REVEAL
+    }
+
+    /// Verify commitment hash matches the revealed values.
+    pub fn verify_commitment(&self, square: u8, salt: &[u8; 16]) -> bool {
+        use solana_program::keccak;
+
+        let mut data = Vec::with_capacity(1 + 16 + 32);
+        data.push(square);
+        data.extend_from_slice(salt);
+        data.extend_from_slice(self.authority.as_ref());
+
+        let hash = keccak::hash(&data);
+        hash.to_bytes() == self.commitment
+    }
+
+    /// Calculate total multiplier including skill, contrarian, and bonus square.
+    /// Returns value in basis points (10000 = 1.0x, 15000 = 1.5x, etc).
+    pub fn calculate_total_multiplier(
+        &self,
+        winning_square: u8,
+        round: &super::Round,
+    ) -> u64 {
+        // 1. Base skill multiplier (100-150)
+        let skill_mult = self.calculate_skill_multiplier();
+
+        // 2. Contrarian bonus (100-148)
+        let contrarian_mult = round.calculate_contrarian_bonus(winning_square);
+
+        // 3. Bonus square multiplier (100 or 200)
+        let bonus_mult = if round.is_bonus_square(winning_square) {
+            200 // 2x for bonus square
+        } else {
+            100
+        };
+
+        // Combined: (skill * contrarian * bonus) / 10000
+        // Max theoretical: 150 * 148 * 200 / 10000 = 444 (4.44x)
+        (skill_mult * contrarian_mult * bonus_mult) / 10000
+    }
+
+    /// Clear commitment state for next round.
+    pub fn clear_commitment(&mut self) {
+        self.commitment = [0u8; 32];
+        self.commit_salt = [0u8; 16];
+        self.revealed_square = Self::NO_REVEAL;
     }
 }
 

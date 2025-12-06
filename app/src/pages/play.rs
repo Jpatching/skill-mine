@@ -55,52 +55,74 @@ pub fn Play() -> Element {
     let current_slot = board_state.current_slot;
     let winning_square = board_state.winning_square;
     let phase = board_state.phase;
+    let bonus_squares = board_state.bonus_squares;
+    let commit_start_slot = board_state.commit_start_slot;
+    let reveal_start_slot = board_state.reveal_start_slot;
     let is_loading = board_state.loading;
     drop(board_state);
 
-    // Calculate remaining time
-    let slots_remaining = if current_slot > 0 && end_slot > current_slot {
-        end_slot.saturating_sub(current_slot)
-    } else {
+    // Calculate remaining time based on current phase
+    // If slots are 0 or MAX, round hasn't started yet - show 0
+    let slots_remaining = if end_slot == u64::MAX || current_slot == 0 {
         0
+    } else {
+        match phase {
+            RoundPhase::Deploying | RoundPhase::Committing => {
+                // During commit: count down to reveal or end
+                if reveal_start_slot > 0 && reveal_start_slot != u64::MAX {
+                    reveal_start_slot.saturating_sub(current_slot)
+                } else {
+                    end_slot.saturating_sub(current_slot)
+                }
+            }
+            RoundPhase::Revealing | RoundPhase::Ended => {
+                end_slot.saturating_sub(current_slot)
+            }
+        }
     };
     let seconds_remaining = (slots_remaining as f64 * 0.4) as u64; // ~400ms per slot
 
     // Check if round needs reset (for UI indication)
     let round_needs_reset = end_slot != u64::MAX && current_slot >= end_slot + INTERMISSION_SLOTS;
 
-    // Phase-aware display
+    // Phase-aware display with social messaging
     let (time_display, time_label, timer_class) = match phase {
-        RoundPhase::Deploying => {
+        RoundPhase::Deploying | RoundPhase::Committing => {
+            // Commit phase - "Where will the community land?"
             let class = if seconds_remaining < 10 {
-                "text-red-400 font-mono text-xl animate-pulse"
+                "text-purple-400 font-mono text-xl animate-pulse"
             } else {
-                "text-high font-mono text-xl"
+                "text-purple-400 font-mono text-xl"
             };
             (
                 format!("{:02}:{:02}", seconds_remaining / 60, seconds_remaining % 60),
-                "Time remaining",
+                "Make your pick",
                 class,
             )
         }
         RoundPhase::Revealing => {
             if round_needs_reset {
                 (
-                    "READY".to_string(),
-                    "Reset & Play",
+                    "SYNCED".to_string(),
+                    "Join next round",
                     "text-green-400 font-mono text-xl animate-pulse",
                 )
             } else {
+                let class = if seconds_remaining < 5 {
+                    "text-gold font-mono text-xl animate-pulse"
+                } else {
+                    "text-gold font-mono text-xl"
+                };
                 (
-                    "...".to_string(),
-                    "Waiting for reset",
-                    "text-gold font-mono text-xl animate-pulse",
+                    format!("{:02}:{:02}", seconds_remaining / 60, seconds_remaining % 60),
+                    "Reveals coming in...",
+                    class,
                 )
             }
         }
         RoundPhase::Ended => (
             format!("#{}", winning_square.map(|s| (s + 1).to_string()).unwrap_or_default()),
-            "Winner",
+            "Synced!",
             "text-gold font-mono text-xl",
         ),
     };
@@ -131,6 +153,7 @@ pub fn Play() -> Element {
                         // Allow selection when round needs reset (player can start next round)
                         disabled: *submitting.read() || (phase != RoundPhase::Deploying && !round_needs_reset),
                         phase: phase,
+                        bonus_squares: bonus_squares,
                         on_select: move |square| toggle_square(square),
                         on_select_all: select_all,
                     }
@@ -152,18 +175,33 @@ pub fn Play() -> Element {
                             }
                         }
 
-                        // Deployed stats
+                        // Stats - social framing
                         div { class: "space-y-2 pt-3 border-t border-gray-700",
-                            div { class: "flex justify-between",
-                                span { class: "text-low text-sm", "Total deployed" }
-                                span { class: "text-high font-mono",
-                                    {format!("{:.4} SOL", total_deployed as f64 / LAMPORTS_PER_SOL)}
+                            if phase == RoundPhase::Committing || phase == RoundPhase::Deploying {
+                                // Hidden during commit
+                                div { class: "flex justify-between",
+                                    span { class: "text-low text-sm", "Community pot" }
+                                    span { class: "text-purple-400 font-mono", "Hidden" }
                                 }
-                            }
-                            div { class: "flex justify-between",
-                                span { class: "text-low text-sm", "You deployed" }
-                                span { class: "text-high font-mono",
-                                    {format!("{:.4} SOL", miner_deployed as f64 / LAMPORTS_PER_SOL)}
+                                div { class: "flex justify-between",
+                                    span { class: "text-low text-sm", "Your pick" }
+                                    span { class: "text-purple-400 font-mono",
+                                        if miner_deployed > 0 { "Locked in" } else { "Pending" }
+                                    }
+                                }
+                            } else {
+                                // Visible during reveal/ended
+                                div { class: "flex justify-between",
+                                    span { class: "text-low text-sm", "Community pot" }
+                                    span { class: "text-high font-mono",
+                                        {format!("{:.4} SOL", total_deployed as f64 / LAMPORTS_PER_SOL)}
+                                    }
+                                }
+                                div { class: "flex justify-between",
+                                    span { class: "text-low text-sm", "Your stake" }
+                                    span { class: "text-high font-mono",
+                                        {format!("{:.4} SOL", miner_deployed as f64 / LAMPORTS_PER_SOL)}
+                                    }
                                 }
                             }
                         }
@@ -232,22 +270,29 @@ pub fn Play() -> Element {
                             }
                         }
 
-                        // Play button (v0.5 - auto handles reset)
+                        // Join button with social messaging
                         if !wallet_connected {
                             p { class: "text-center text-low text-sm py-2",
-                                "Connect wallet to play"
+                                "Connect wallet to join"
                             }
                         } else {
-                            // Show reset indicator when needed
+                            // Phase-aware messages - social framing
                             if round_needs_reset {
                                 div { class: "mb-3 p-2 bg-green-500/10 border border-green-500/30 rounded text-sm text-green-400 text-center",
-                                    "Round ended - Your play will reset & start next round!"
+                                    "Round synced! Join the next one."
+                                }
+                            } else if phase == RoundPhase::Committing || phase == RoundPhase::Deploying {
+                                div { class: "mb-3 p-2 bg-purple-500/10 border border-purple-500/30 rounded text-sm text-purple-400 text-center",
+                                    "Where will the community land? Make your pick."
+                                }
+                            } else if phase == RoundPhase::Revealing {
+                                div { class: "mb-3 p-2 bg-gold/10 border border-gold/30 rounded text-sm text-gold text-center",
+                                    "Reveals coming in... who synced?"
                                 }
                             }
                             button {
                                 class: "w-full controls-primary py-3 rounded-lg font-semibold transition-all hover:scale-[1.02]",
-                                // Allow play when round needs reset OR during active round
-                                disabled: selected_squares.read().is_empty() || *submitting.read() || (phase != RoundPhase::Deploying && !round_needs_reset),
+                                disabled: selected_squares.read().is_empty() || *submitting.read() || (phase != RoundPhase::Deploying && phase != RoundPhase::Committing && !round_needs_reset),
                                 onclick: {
                                     let wallet_pubkey = wallet_pubkey.clone();
                                     move |_| {
@@ -260,7 +305,6 @@ pub fn Play() -> Element {
                                             tx_result.set(None);
 
                                             spawn(async move {
-                                                // play_transaction auto-handles reset if needed
                                                 let result = play_transaction(
                                                     &authority,
                                                     amount,
@@ -274,13 +318,15 @@ pub fn Play() -> Element {
                                     }
                                 },
                                 if *submitting.read() {
-                                    if round_needs_reset { "Resetting & Deploying..." } else { "Deploying..." }
+                                    if round_needs_reset { "Joining next round..." } else { "Locking in..." }
                                 } else if selected_squares.read().is_empty() {
-                                    "Select squares"
+                                    "Pick your square"
                                 } else if round_needs_reset {
-                                    "Reset & Play"
+                                    "Join Next Round"
+                                } else if phase == RoundPhase::Revealing {
+                                    "Waiting for sync..."
                                 } else {
-                                    "Play"
+                                    "Lock It In"
                                 }
                             }
                         }

@@ -35,6 +35,10 @@ pub enum OreInstruction {
 
     // Skill System (v0.2)
     SubmitPrediction = 27,
+
+    // Commit-Reveal System (v0.6)
+    SubmitCommit = 28,
+    RevealChoice = 29,
 }
 
 #[repr(C)]
@@ -200,6 +204,26 @@ pub struct SubmitPrediction {
     pub square: u8,
 }
 
+/// v0.6: Submit a commitment hash for the commit-reveal scheme.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+pub struct SubmitCommit {
+    /// The commitment hash: keccak256(square || salt || authority).
+    pub commitment: [u8; 32],
+}
+
+/// v0.6: Reveal the committed choice.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+pub struct RevealChoice {
+    /// The revealed square (0-24).
+    pub square: u8,
+    /// Padding for alignment.
+    pub _padding: [u8; 15],
+    /// The salt used in the commitment.
+    pub salt: [u8; 16],
+}
+
 instruction!(OreInstruction, Automate);
 instruction!(OreInstruction, Close);
 instruction!(OreInstruction, Checkpoint);
@@ -225,3 +249,5 @@ instruction!(OreInstruction, MigrateAutomation);
 instruction!(OreInstruction, Liq);
 instruction!(OreInstruction, Initialize);
 instruction!(OreInstruction, SubmitPrediction);
+instruction!(OreInstruction, SubmitCommit);
+instruction!(OreInstruction, RevealChoice);

@@ -31,6 +31,7 @@ pub fn use_board() -> Signal<BoardState> {
                         match state.phase {
                             RoundPhase::Deploying if seconds_remaining < 15 => 1500,
                             RoundPhase::Deploying => 3000,
+                            RoundPhase::Committing => 2000,
                             RoundPhase::Revealing => 2000,
                             RoundPhase::Ended => 5000,
                         }
@@ -57,6 +58,9 @@ async fn fetch_and_update_board_safe(mut board: Signal<BoardState>) -> Result<()
     board_mut.current_slot = data.current_slot;
     board_mut.winning_square = data.winning_square;
     board_mut.phase = data.phase;
+    board_mut.bonus_squares = data.bonus_squares;
+    board_mut.commit_start_slot = data.commit_start_slot;
+    board_mut.reveal_start_slot = data.reveal_start_slot;
     board_mut.loading = false;
     Ok(())
 }
@@ -94,6 +98,9 @@ struct BoardData {
     current_slot: u64,
     winning_square: Option<u8>,
     phase: RoundPhase,
+    bonus_squares: [u8; 3],
+    commit_start_slot: u64,
+    reveal_start_slot: u64,
 }
 
 async fn fetch_board_and_round() -> Result<BoardData, String> {
@@ -133,8 +140,13 @@ async fn fetch_board_and_round() -> Result<BoardData, String> {
         // total_deployed: u64 - offset 536
         // total_vaulted: u64 - offset 544
         // total_winnings: u64 - offset 552
-        // winning_square: u8 - offset 560 (NEW in v0.5)
-        // _padding: [u8; 7] - offset 561
+        // winning_square: u8 - offset 560
+        // bonus_squares: [u8; 3] - offset 561 (v0.6)
+        // _padding: [u8; 4] - offset 564
+        // commit_start_slot: u64 - offset 568 (v0.6)
+        // reveal_start_slot: u64 - offset 576 (v0.6)
+        // revealed_count: [u64; 25] (200 bytes) - offset 584 (v0.6)
+        // total_reveals: u64 - offset 784 (v0.6)
         if round_bytes.len() >= 216 {
             // Parse deployed array
             for i in 0..25 {
@@ -151,10 +163,28 @@ async fn fetch_board_and_round() -> Result<BoardData, String> {
                 .try_into()
                 .unwrap_or([0; 32]);
 
-            // v0.5: winning_square is now stored directly at offset 560
-            // (not in slot_hash[0] anymore - fixes square 0 bug)
+            // winning_square is stored at offset 560
             if slot_hash != [0u8; 32] && round_bytes.len() >= 561 {
                 data.winning_square = Some(round_bytes[560]);
+            }
+
+            // v0.6: Parse bonus_squares [u8; 3] at offset 561
+            if round_bytes.len() >= 564 {
+                data.bonus_squares = [
+                    round_bytes[561],
+                    round_bytes[562],
+                    round_bytes[563],
+                ];
+            }
+
+            // v0.6: Parse commit/reveal slots at offsets 568, 576
+            if round_bytes.len() >= 584 {
+                data.commit_start_slot = u64::from_le_bytes(
+                    round_bytes[568..576].try_into().unwrap_or_default()
+                );
+                data.reveal_start_slot = u64::from_le_bytes(
+                    round_bytes[576..584].try_into().unwrap_or_default()
+                );
             }
 
             // Parse count array (offset 248, 200 bytes)
@@ -169,12 +199,20 @@ async fn fetch_board_and_round() -> Result<BoardData, String> {
         }
     }
 
-    // Calculate round phase
+    // Calculate round phase based on commit-reveal timing
+    // Flow: Deploying → Committing → Revealing → Ended
     data.phase = if data.winning_square.is_some() {
+        // Round finalized - winner determined
         RoundPhase::Ended
-    } else if data.current_slot >= data.end_slot {
+    } else if data.reveal_start_slot > 0 && data.current_slot >= data.reveal_start_slot {
+        // Past reveal start - in reveal phase
         RoundPhase::Revealing
+    } else if data.commit_start_slot > 0 && data.current_slot >= data.commit_start_slot {
+        // Past commit start but before reveal - in commit phase
+        // During this phase, users submit choice hash (visible SOL but hidden choice)
+        RoundPhase::Committing
     } else {
+        // Default: deploying phase (SOL deployment visible, choices not yet locked)
         RoundPhase::Deploying
     };
 

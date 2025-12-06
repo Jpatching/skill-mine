@@ -58,7 +58,13 @@ pub fn process_deploy(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResul
         round.total_vaulted = 0;
         round.total_winnings = 0;
         round.winning_square = 0;
-        round._padding = [0; 7];
+        round.bonus_squares = [0; 3];
+        round._padding = [0; 4];
+        // v0.6 commit-reveal fields (slots set when round starts)
+        round.commit_start_slot = 0;
+        round.reveal_start_slot = 0;
+        round.revealed_count = [0; 25];
+        round.total_reveals = 0;
         round
     } else if round_info.data_len() < expected_size {
         // v0.5 Migration: Old round account needs reallocation
@@ -99,10 +105,13 @@ pub fn process_deploy(accounts: &[AccountInfo<'_>], data: &[u8]) -> ProgramResul
     system_program.is_program(&system_program::ID)?;
 
     // Wait until first deploy to start round.
-    // Schelling Point: No entropy needed - winner determined by majority vote
+    // v0.6 Commit-Reveal: deploy(60) -> commit(30) -> reveal(30) = 120 slots total (~48 seconds)
     if board.end_slot == u64::MAX {
         board.start_slot = clock.slot;
-        board.end_slot = board.start_slot + 150; // ~60 seconds at 400ms/slot
+        // v0.6: Use Round timing constants for commit-reveal phases
+        round.commit_start_slot = board.start_slot + Round::DEPLOY_PHASE_SLOTS;
+        round.reveal_start_slot = round.commit_start_slot + Round::COMMIT_PHASE_SLOTS;
+        board.end_slot = round.reveal_start_slot + Round::REVEAL_PHASE_SLOTS;
         round.expires_at = board.end_slot + ONE_DAY_SLOTS;
     }
 

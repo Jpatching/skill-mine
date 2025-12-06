@@ -49,8 +49,26 @@ pub struct Round {
     /// Stored directly to avoid square 0 bug with slot_hash == [0;32].
     pub winning_square: u8,
 
-    /// Padding for alignment (7 bytes to align to 8-byte boundary).
-    pub _padding: [u8; 7],
+    /// Bonus squares for this round (RNG from previous round's slot_hash).
+    /// 3 bonus squares that provide 2x multiplier if they win.
+    pub bonus_squares: [u8; 3],
+
+    /// Padding for alignment (4 bytes to align to 8-byte boundary).
+    pub _padding: [u8; 4],
+
+    // ============ v0.6 Commit-Reveal Fields ============
+
+    /// End of deploy phase, start of commit phase.
+    pub commit_start_slot: u64,
+
+    /// End of commit phase, start of reveal phase.
+    pub reveal_start_slot: u64,
+
+    /// Count of revealed choices per square (for popularity/contrarian calculation).
+    pub revealed_count: [u64; 25],
+
+    /// Total number of reveals submitted.
+    pub total_reveals: u64,
 }
 
 impl Round {
@@ -120,6 +138,93 @@ impl Round {
 
     pub fn did_hit_motherlode(&self, rng: u64) -> bool {
         rng.reverse_bits() % 625 == 0
+    }
+
+    // ============ v0.6 Commit-Reveal Methods ============
+
+    /// Round timing constants (in slots, ~0.4s each)
+    pub const DEPLOY_PHASE_SLOTS: u64 = 60;  // 24 seconds for deploy
+    pub const COMMIT_PHASE_SLOTS: u64 = 30;  // 12 seconds for commit
+    pub const REVEAL_PHASE_SLOTS: u64 = 30;  // 12 seconds for reveal
+    pub const TOTAL_ROUND_SLOTS: u64 = 120;  // 48 seconds total
+
+    /// Check if round is in deploy phase.
+    pub fn is_deploy_phase(&self, current_slot: u64) -> bool {
+        current_slot < self.commit_start_slot
+    }
+
+    /// Check if round is in commit phase.
+    pub fn is_commit_phase(&self, current_slot: u64) -> bool {
+        current_slot >= self.commit_start_slot && current_slot < self.reveal_start_slot
+    }
+
+    /// Check if round is in reveal phase.
+    pub fn is_reveal_phase(&self, current_slot: u64) -> bool {
+        current_slot >= self.reveal_start_slot
+    }
+
+    /// Get the winning square from revealed_count (argmax of reveals).
+    /// Falls back to deployed if no reveals (backward compatibility).
+    pub fn get_winning_square_from_reveals(&self) -> usize {
+        if self.total_reveals == 0 {
+            // No reveals - use deployed as fallback
+            self.deployed
+                .iter()
+                .enumerate()
+                .max_by(|(i1, v1), (i2, v2)| v1.cmp(v2).then_with(|| i2.cmp(i1)))
+                .map(|(i, _)| i)
+                .unwrap_or(0)
+        } else {
+            // Use revealed_count for winner determination
+            self.revealed_count
+                .iter()
+                .enumerate()
+                .max_by(|(i1, v1), (i2, v2)| v1.cmp(v2).then_with(|| i2.cmp(i1)))
+                .map(|(i, _)| i)
+                .unwrap_or(0)
+        }
+    }
+
+    /// Generate bonus squares from previous round's slot_hash.
+    /// Returns 3 unique bonus squares that give 2x multiplier.
+    pub fn generate_bonus_squares(slot_hash: &[u8; 32]) -> [u8; 3] {
+        let s1 = slot_hash[0] % 25;
+        let mut s2 = slot_hash[8] % 25;
+        let mut s3 = slot_hash[16] % 25;
+
+        // Ensure unique squares
+        if s2 == s1 {
+            s2 = (s2 + 1) % 25;
+        }
+        if s3 == s1 || s3 == s2 {
+            s3 = (s3 + 1) % 25;
+        }
+        if s3 == s1 || s3 == s2 {
+            s3 = (s3 + 1) % 25;
+        }
+
+        [s1, s2, s3]
+    }
+
+    /// Check if a square is a bonus square.
+    pub fn is_bonus_square(&self, square: u8) -> bool {
+        self.bonus_squares.contains(&square)
+    }
+
+    /// Calculate contrarian bonus (100-148 range) based on popularity.
+    /// Less popular winning squares get higher bonus.
+    pub fn calculate_contrarian_bonus(&self, winning_square: u8) -> u64 {
+        if self.total_reveals == 0 {
+            return 100; // No bonus if no reveals
+        }
+
+        let popularity = self.revealed_count[winning_square as usize];
+        let popularity_pct = (popularity * 100) / self.total_reveals.max(1);
+
+        // Less popular = higher bonus
+        // 0% popularity = +48% bonus
+        // 100% popularity = +0% bonus
+        100 + (100u64.saturating_sub(popularity_pct)).min(48)
     }
 }
 

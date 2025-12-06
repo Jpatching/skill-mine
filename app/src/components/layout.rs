@@ -15,13 +15,13 @@ pub fn Layout() -> Element {
                         // Logo - links to game
                         div { class: "flex items-center",
                             Link { to: Route::Play {}, class: "flex items-center space-x-2",
-                                span { class: "text-2xl font-bold text-skill-400", "SKILL" }
+                                span { class: "text-2xl font-bold text-skill-400", "SYNC" }
                             }
                         }
 
                         // Nav links
                         div { class: "hidden sm:flex sm:items-center sm:space-x-8",
-                            NavLink { to: Route::Play {}, label: "Game" }
+                            NavLink { to: Route::Play {}, label: "Play" }
                             NavLink { to: Route::Leaderboard {}, label: "Leaderboard" }
                             NavLink { to: Route::Stats {}, label: "Stats" }
                             NavLink { to: Route::Home {}, label: "About" }
@@ -43,7 +43,8 @@ pub fn Layout() -> Element {
             // Footer
             footer { class: "border-t elevated-border py-8 mt-auto",
                 div { class: "max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 text-center text-low",
-                    p { "SKILL - Skill-Based Mining on Solana" }
+                    p { "SYNC - Social Mining on Solana" }
+                    p { class: "text-sm mt-1 text-gray-500", "Sync or sink." }
                     p { class: "text-sm mt-2",
                         "Program: "
                         code { class: "text-gold", "{crate::PROGRAM_ID}" }

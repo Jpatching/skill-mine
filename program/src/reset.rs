@@ -58,31 +58,35 @@ pub fn process_reset(accounts: &[AccountInfo<'_>], _data: &[u8]) -> ProgramResul
     round_next.total_vaulted = 0;
     round_next.total_winnings = 0;
     round_next.winning_square = 0;
-    round_next._padding = [0; 7];
+    // Generate bonus squares from current round's slot_hash (will be set below)
+    round_next.bonus_squares = Round::generate_bonus_squares(&round.slot_hash);
+    round_next._padding = [0; 4];
+    // v0.6 commit-reveal fields - initialized when deploy starts
+    round_next.commit_start_slot = 0;
+    round_next.reveal_start_slot = 0;
+    round_next.revealed_count = [0; 25];
+    round_next.total_reveals = 0;
 
-    // ============ SCHELLING POINT: Majority Voting ============
-    // Winner = square with most SOL deployed (coordination game)
-    // Tie-breaker: lower index wins (deterministic)
-    let (winning_square, max_deployed) = round
-        .deployed
-        .iter()
-        .enumerate()
-        .max_by(|(i1, v1), (i2, v2)| {
-            // Primary: most SOL deployed
-            // Secondary: lower index (for deterministic tie-breaking)
-            v1.cmp(v2).then_with(|| i2.cmp(i1))
-        })
-        .map(|(i, &v)| (i, v))
-        .unwrap_or((0, 0));
+    // ============ SCHELLING POINT: Commit-Reveal Coordination ============
+    // v0.6: Winner = argmax(revealed_count) if reveals exist, else argmax(deployed)
+    // This allows gradual migration: old clients still work with deployed-based voting
+    let winning_square = round.get_winning_square_from_reveals();
+    let max_deployed = round.deployed[winning_square];
 
-    sol_log(&format!(
-        "Schelling Point: Square #{} wins with {} lamports",
-        winning_square, max_deployed
-    ));
+    if round.total_reveals > 0 {
+        sol_log(&format!(
+            "Commit-Reveal: Square #{} wins with {} reveals ({} lamports)",
+            winning_square, round.revealed_count[winning_square], max_deployed
+        ));
+    } else {
+        sol_log(&format!(
+            "Schelling Point: Square #{} wins with {} lamports",
+            winning_square, max_deployed
+        ));
+    }
 
     // Store winning square directly (fixes square 0 bug)
     round.winning_square = winning_square as u8;
-    round._padding = [0; 7];
 
     // Sample slot_hash from SlotHashes sysvar for unpredictable RNG (split, motherlode, top_miner)
     // SlotHashes layout: first 8 bytes = length, then (slot: u64, hash: [u8;32]) entries
